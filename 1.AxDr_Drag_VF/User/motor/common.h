@@ -1539,6 +1539,11 @@ void force_volt_mode(pmsm_t* pm);
 void open_volt_mode(pmsm_t* pm);
 void force_curr_mode(pmsm_t* pm);
 
+/* 开环 V/f 测试 (实现见 foc_loop.c)。主循环调用 openloop_test_run() */
+void openloop_test_start(void);
+void openloop_test_stop(void);
+void openloop_test_run(void);
+
 void sensory_pos_calc(pmsm_t* pm);
 void senless_pos_calc(pmsm_t* pm);
 void pos_calc(pmsm_t* pm);

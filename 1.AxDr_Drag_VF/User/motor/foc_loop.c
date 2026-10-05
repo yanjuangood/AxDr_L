@@ -223,6 +223,195 @@ _RAM_FUNC void force_curr_mode(pmsm_t* pm)
 }
 
 /**
+  ******************************************************************************
+  *  开环 V/f 测试 (drag mode)
+  *
+  *  用途: 在没有位置反馈、没有电流反馈的情况下让电机先转起来, 验证
+  *        功率级 / 相序 / 接线 / 编码器安装方向。
+  *
+  *  ⚠️ 安全须知 (这块板 + 这类电机的组合很敏感):
+  *     - 本板没有任何硬件过流保护 (FD6288Q 的 ITRIP/FAULT 是 NC)
+  *     - 2312 电机 Rs 只有 0.203 欧。开环是恒压驱动, 低速时电流完全由
+  *       「电压 / 相电阻」决定, 没有任何反馈去限制它:
+  *           0.15V / 0.203 = 0.74 A
+  *           0.50V / 0.203 = 2.46 A
+  *           1.50V / 0.203 = 7.39 A
+  *     - 如果电源不能限流, 强烈建议串一个 2 欧 / 10W 的功率电阻在母线上,
+  *       或者用带限流的可调电源。开机瞬间盯住电源电流表。
+  *
+  *  V/f 曲线怎么定的:
+  *     相电压 = 反电动势 + 电阻压降
+  *            = wr * pn * flux + I * Rs
+  *     本电机 pn*flux = 7 * 0.0065 = 0.0455 V/(rad/s)
+  *     取斜率 0.050 (略高于反电动势常数, 留一点转矩余量), 再加一个小偏置
+  *     克服静摩擦。这样在任意转速下电流都稳定在 0.5~1.5A, 不会失控。
+  ******************************************************************************
+  */
+
+/* V/f 斜率 (V per rad/s)。≈ pn*flux + 余量 */
+#define OL_VF_RATIO     0.050f
+
+/* 启动最低电压 (V)。克服静摩擦和死区, 对应约 0.74A */
+#define OL_V_MIN        0.15f
+
+/* 目标机械角速度 (rad/s)。30 rad/s ≈ 286 rpm */
+#define OL_WR_TARGET    30.0f
+
+/* 加速度 (rad/s^2)。15 大约 2 秒到目标速度 */
+#define OL_RAMP_RATE    15.0f
+
+/* 匀速保持时间 (秒), 之后自动减速停机 */
+#define OL_HOLD_SEC     6.0f
+
+/* 主循环调用周期 (秒)。main.c 里是 HAL_Delay(10) */
+#define OL_TS           0.01f
+
+/* 状态机 */
+enum
+{
+    OL_IDLE = 0,
+    OL_ACCEL,
+    OL_HOLD,
+    OL_DECEL
+};
+
+static uint8_t ol_state = OL_IDLE;
+static float   ol_wr    = 0.0f;      /* 当前速度给定 */
+static float   ol_hold  = 0.0f;      /* 匀速计时 */
+
+/**
+***********************************************************************
+* @brief:      ol_hard_fault(void)
+* @retval:     uint8_t 1 = 有必须停机的硬故障
+* @details:    判断是否有「必须停机」的故障。
+*              刻意不含 ioff_err: 开环 V/f 不需要电流反馈, 而且 U14 没焊时
+*              这个位本来就是置起的, 算进去会导致开环永远起不来。
+*              也不含 enc_err: 开环用内部拖拽角度, 不用编码器。
+***********************************************************************
+**/
+static uint8_t ol_hard_fault(void)
+{
+    return (uint8_t)((pm.fault.bit.un_volt != 0u) ||
+                     (pm.fault.bit.ov_volt != 0u) ||
+                     (pm.fault.bit.ov_curr != 0u) ||
+                     (pm.fault.bit.ov_tmos != 0u) ||
+                     (pm.fault.bit.ov_tcoi != 0u));
+}
+
+/**
+***********************************************************************
+* @brief:      openloop_test_start(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    启动开环 V/f 斜坡。有硬故障时拒绝启动
+***********************************************************************
+**/
+void openloop_test_start(void)
+{
+    if (ol_hard_fault() != 0u)
+    {
+        return;     /* 有故障就别起了 */
+    }
+
+    ol_wr    = 0.0f;
+    ol_hold  = 0.0f;
+    ol_state = OL_ACCEL;
+}
+
+/**
+***********************************************************************
+* @brief:      openloop_test_stop(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    立即停止开环测试并关输出
+***********************************************************************
+**/
+void openloop_test_stop(void)
+{
+    ol_state = OL_IDLE;
+    ol_wr    = 0.0f;
+    ol_hold  = 0.0f;
+
+    pm.ctrl.wr_set = 0.0f;
+    pm.ctrl.vd_set = 0.0f;
+    pm.ctrl.vq_set = 0.0f;
+    pm.ctrl_bit   = reset;      /* 状态机收到 reset 会关 PWM (只关一次) */
+}
+
+/**
+***********************************************************************
+* @brief:      openloop_test_run(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    开环 V/f 测试状态机, 主循环 100Hz 调用
+* @note        任何硬故障都会立刻停机; 跑完 OL_HOLD_SEC 秒自动减速停机
+***********************************************************************
+**/
+void openloop_test_run(void)
+{
+    float v;
+
+    /* 一直盯着故障: 有故障立刻停 */
+    if (ol_hard_fault() != 0u)
+    {
+        openloop_test_stop();
+        return;
+    }
+
+    if (ol_state == OL_IDLE)
+    {
+        return;
+    }
+
+    switch (ol_state)
+    {
+    case OL_ACCEL:
+        ol_wr += OL_RAMP_RATE * OL_TS;
+        if (ol_wr >= OL_WR_TARGET)
+        {
+            ol_wr    = OL_WR_TARGET;
+            ol_hold  = 0.0f;
+            ol_state = OL_HOLD;
+        }
+        break;
+
+    case OL_HOLD:
+        ol_hold += OL_TS;
+        if (ol_hold >= OL_HOLD_SEC)
+        {
+            ol_state = OL_DECEL;
+        }
+        break;
+
+    case OL_DECEL:
+        ol_wr -= OL_RAMP_RATE * OL_TS;
+        if (ol_wr <= 0.0f)
+        {
+            openloop_test_stop();
+            return;
+        }
+        break;
+
+    default:
+        return;
+    }
+
+    /* V/f: 电压随速度线性上升 + 启动偏置 */
+    v = OL_VF_RATIO * ol_wr + OL_V_MIN;
+
+    /* 写给定。wr_set 是机械角速度, force_volt_mode 会乘极对数得到电角速度 */
+    pm.ctrl.wr_set = ol_wr;
+    pm.ctrl.vd_set = 0.0f;
+    pm.ctrl.vq_set = v;
+
+    /* 必须先确认走 V/f 分支, 再切 opera。
+     * pmsm_mode_ctrl() 是按 pm.foc.mode 分派的, 如果这里不是 foc_volt_mode,
+     * 就会跑到电流闭环分支去 */
+    pm.foc.mode = foc_volt_mode;
+    pm.ctrl_bit = opera;
+}
+
+/**
 ***********************************************************************
 * @brief:      foc_vel(pmsm_t* pm, float vel_set, float iq_set, float pos)
 * @param[in]:  pm       指向 PMSM 控制结构体的指针
