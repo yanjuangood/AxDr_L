@@ -8,8 +8,16 @@
 * @details:    PWM主中断回调函数，读取ADC值，计算电流，执行FOC参数计算、故障检测和状态控制
 ***********************************************************************
 **/
+/* 中断频率诊断计数器。
+ * force_volt_mode 每个中断累加 we_set*foc_ts, 如果 ISR 实际频率不是 20kHz,
+ * 磁场转速就会和设定值差一个倍数 —— 转子跟不上就表现为"只抖不转"。
+ * TIM1 是中心对齐模式, CC4 触发 ADC 注入; 模式对了是 20kHz, 错了会翻倍。
+ * 直接数中断最可靠。 */
+volatile uint32_t foc_isr_cnt = 0u;
+
 _RAM_FUNC void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
+    foc_isr_cnt++;
     foc_adc_sample(&pm);
     foc_para_calc(&pm);
     pmsm_fault_check(&pm);   /* 先查故障: 有故障会把 ctrl_bit 打到 reset 停机 */

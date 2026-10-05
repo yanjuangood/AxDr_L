@@ -44,26 +44,47 @@ void pmsm_board_init(void)
 
 /**
 ***********************************************************************
-* @brief:      pmsm_pr60_init(void)
+* @brief:      pmsm_2804_init(void)
 * @param[in]:  void
 * @retval:     void
-* @details:    PMSM 4310 电机参数初始化，包括极对数、电阻、电感、磁链、转动惯量等参数的设置
+* @details:    2804 云台电机参数初始化
+*
+*  数据来源: 电机规格表
+*      电机型号  2804          极对数   7 (12N14P)
+*      线电阻    5.1 Ω         线电感   2.8 mH
+*      磁链      0.0035 Wb     转速常数 220 KV
+*      额定电流  0.5 A         堵转电流 1.8 A
+*      扭矩      0.03 Nm       最大转速 2700 RPM @ 12V
+*
+*  ⚠️ 三个换算必须做对, 否则 FOC 全错:
+*    1. 手册的"线电阻/线电感"是线间值, FOC 用的是相值 -> 除以 2
+*           Rs = 5.1/2 = 2.55 Ω      Ls = 2.8mH/2 = 1.4 mH
+*    2. 手册的"磁链 0.0035Wb"是线值, FOC 要相值 (λ 满足 E_phase = ωe*λ)
+*       用 KV 和最大转速、扭矩三路交叉验证都指向 λ ≈ 0.006:
+*           用 KV     : Ke = 9.549/220 = 0.0434 -> λ = 0.0434/7 = 0.0062
+*           用最大转速: 12V/2700rpm = 12/282.7 = 0.0425 -> λ = 0.0061
+*           用扭矩    : Kt = 0.03/0.5 = 0.06 -> λ = 0.06/(1.5*7) = 0.0057
+*           0.0035 * sqrt(3) = 0.00606  <- 正好差一个 √3
+*    3. Kt 由 Kt = 1.5*pn*λ 推出, 不要手填
 ***********************************************************************
 **/
-void pmsm_2312s_init(void)
+void pmsm_2804_init(void)
 {
-    pm.para.pn = 7;
-    pm.para.Rs = 0.202977806f;
-    pm.para.Ld = 0.000108778855f;
-    pm.para.Lq = 0.000112416135f;
-    pm.para.Ls = 0.000110597495f;
-    pm.para.Ldif = 3.63728032e-06f;
-    pm.para.flux = 0.006488f;
-    pm.para.B  = 0.000188353f;
-    pm.para.Js = 9.08865259e-05f;
+    pm.para.pn = 7;                       /* 12N14P -> 7 对极 */
+
+    pm.para.Rs = 5.1f / 2.0f;             /* 2.55 Ω,  线电阻 / 2 */
+    pm.para.Ld = 2.8e-3f / 2.0f;          /* 1.4 mH,  线电感 / 2 */
+    pm.para.Lq = 2.8e-3f / 2.0f;          /* 表贴式, Ld = Lq */
+    pm.para.Ls = 2.8e-3f / 2.0f;
+    pm.para.Ldif = 0.0f;
+
+    pm.para.flux = 0.0062f;               /* 见上面第 2 点的换算 */
+
+    pm.para.B  = 0.00002f;                /* 阻尼, 估的 */
+    pm.para.Js = 1.0e-05f;                /* 转子惯量, 估的 (51g, 34.5mm) */
 
     pm.para.Gr = 1.0f;
-    pm.para.ibw = 1000.0f;
+    pm.para.ibw = 1000.0f;                /* 电流环带宽 1kHz */
     pm.para.delta = 4.0f;
 
     pm.para.div_pn = 1.0f / pm.para.pn;
@@ -71,14 +92,15 @@ void pmsm_2312s_init(void)
     pm.para.div_Gr = 1.0f / pm.para.Gr;
     pm.para.Gref = 1.0f;
 
-    pm.para.Kt = 1.5f * pm.para.pn * pm.para.flux;
+    pm.para.Kt = 1.5f * pm.para.pn * pm.para.flux;   /* 0.0651 N*m/A */
     pm.para.div_Kt = 1.0f / pm.para.Kt;
 
     pm.ctrl.wm_acc = 200.0f;
     pm.ctrl.wm_dec = 200.0f;
 
-    pm.para.e_off = 2.34354496f;
-    pm.para.r_off = 2.12998796f;
+    /* 电角度零点, 需要标定。标定前闭环不要开 */
+    pm.para.e_off = 0.0f;
+    pm.para.r_off = 0.0f;
     pm.para.m_off = 0.0f;
 }
 
@@ -123,7 +145,7 @@ void pmsm_peroid_init(void)
 void pmsm_init(void)
 {
     memset(&pm, 0, sizeof(pm));
-    pmsm_2312s_init();
+    pmsm_2804_init();
 
     pmsm_board_init();
     pmsm_peroid_init();

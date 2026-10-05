@@ -68,19 +68,14 @@ uint16_t adc1_buff[2];
 uint16_t adc2_buff[4];
 
 /* ===========================================================================
- *  开�?V/f 测试开�?
+ *  开环 V/f 测试开关
  *
- *  0 = 关闭 (默认)。电机不会转, 固件保持原来的行为�?
- *  1 = 开启。上�?5 秒后自动跑一段开�?V/f: 加�?2s -> 匀�?6s -> 减速停机�?
+ *  0 = 关闭。1 = 开启: 上电 5 秒后自动跑一段 (加速 -> 匀速 6s -> 减速停机)。
  *
- *  ⚠️ 打开之前务必确认:
- *     1. 电机三相线接�? 电机轴固定好 (会转!)
- *     2. 母线电源接上 (否则欠压保护会直接把 PWM 停掉)
- *     3. 电源有限�? 或者母线上串了功率电阻
- *        本板没有硬件过流保护, U14 没焊时软件过流保护也不完�?
- *     4. 打开后盯住电源电流表�?312 电机 Rs 只有 0.2 �? 电流会很快上�?
- *
- *  参数�?User/motor/foc_loop.c 顶部�?OL_xxx �?
+ *  ⚠️ 打开前确认: 电机三相线接好、轴固定好、母线电源接上 (否则欠压会停 PWM)。
+ *     本板没有硬件过流保护, U14 未焊时也没有精确的电流环保护 ——
+ *     建议母线上串一个 2 欧 / 10W 功率电阻再试。
+ *     参数在 User/motor/foc_loop.c 顶部的 OL_xxx 宏
  * =========================================================================== */
 #define OPENLOOP_TEST       0
 
@@ -128,7 +123,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_Delay(1000);
 
-  /* MT6701 磁编码器: 自动探测 SSI �?SPI 模式 (会重�?SPI1 �?8bit) */
+  /* MT6701 磁编码器: 自动探测 SSI 的 SPI 模式 (会重配 SPI1 为 8bit) */
   mt6701_init();
 
   HAL_TIM_Base_Start(&htim3);
@@ -158,19 +153,19 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* ===== 调试输出 (100Hz), �?VOFA+ (数据引擎�?JustFloat) 看波�?=====
-     * 通道: 0=机械�?0~360)   1=磁场状�?mg      2=CRC通过
-     *       3=SPI模式         4=累计失败次数     5=累计角度(带圈�?
-     *       6=MOS温度(�?      7=绕组温度(�?
-     *       8=故障位掩�?     9=母线电压(V)     10=A相电�?A)   11=q轴电�?A)
+    /* ===== 调试输出 (100Hz), 用 VOFA+ (数据引擎选 JustFloat) 看波形 =====
+     * 通道: 0=机械角(0~360)   1=磁场状态 mg      2=CRC通过
+     *       3=SPI模式         4=累计失败次数     5=累计角度(带圈数)
+     *       6=MOS温度(℃)      7=绕组温度(℃)
+     *       8=故障位掩码      9=母线电压(V)     10=A相电流(A)   11=q轴电流(A)
      */
     mt6701_read(&mt6701);
     temp_calc();
 
 #if OPENLOOP_TEST
-    /* ===== 开�?V/f 测试 =====
-     * 上电 5 秒后自动开�?(留时间让你确认电机和电源状�?�?
-     * 测试期间固件自己管理 ctrl_bit / wr_set / vq_set, 不要手动覆盖 */
+    /* ===== 开环 V/f 测试 =====
+     * 上电 5 秒后自动开始 (留时间确认电机和电源状态)。
+     * 测试期间由状态机自己管理 ctrl_bit / wr_set / vq_set, 别手动覆盖 */
     {
         static uint32_t ol_boot_cnt = 0u;
 
@@ -182,7 +177,7 @@ int main(void)
                 openloop_test_start();
             }
         }
-        openloop_test_run();            /* 状态机: 内部有故障会自己�?*/
+        openloop_test_run();            /* 内部有故障会自己停 */
     }
 #endif
 
@@ -196,8 +191,12 @@ int main(void)
     vofa_send_data(7, ntc_coil.temp);     /* NTC3 外接绕组   (PB12) */
     vofa_send_data(8, (float)pm.fault.all);  /* 故障掩码: 0 = 正常 */
     vofa_send_data(9, pm.foc.vbus);          /* 母线电压 (V) */
-    vofa_send_data(10, pm.foc.i_a);          /* A 相电�?(A) */
-    vofa_send_data(11, pm.foc.i_q);          /* q 轴电�?(A) */
+    /* 10/11 发原始 ADC 计数而不是换算后的电流:
+     * U14 没焊时 VREF=0, RS624 输出是单极性的, 换算后的电流值是错的,
+     * 但原始计数仍然单调反映电流大小 —— 诊断"只抖不转"要看的就是它。
+     * 换算: I ≈ (counts - 20) / 24.8  安培 */
+    vofa_send_data(10, (float)pm.adc.ia);    /* A 相原始计数 */
+    vofa_send_data(11, (float)pm.adc.ic);    /* C 相原始计数 */
     vofa_sendframetail();
 
     HAL_Delay(10);
