@@ -32,12 +32,12 @@ void pmsm_board_init(void)
     pm.board.Rt_Mos = 10000.0f;
     pm.board.Rt_Mos_res = 10000.0f;
     pm.board.Rt_Mos_Ka = 273.15f;
-    pm.board.Rt_Mos_B = 3950.0f;
+    pm.board.Rt_Mos_B = 3500.0f;    /* 硬件 NTC: HNTC0603-103F3450FA */
 
     pm.board.Rt_rotor = 10000.0f;
     pm.board.Rt_rotor_res = 10000.0f;
     pm.board.Rt_rotor_Ka = 273.15f;
-    pm.board.Rt_rotor_B = 3950.0f;
+    pm.board.Rt_rotor_B = 3500.0f;  /* 硬件 NTC: HNTC0603-103F3450FA */
 
     pm.board.dead_time = 0.5f; //us
 }

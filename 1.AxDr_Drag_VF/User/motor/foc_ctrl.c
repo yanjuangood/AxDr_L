@@ -13,7 +13,7 @@ _RAM_FUNC void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     foc_adc_sample(&pm);
     foc_para_calc(&pm);
     pmsm_state_ctrl(&pm);
-	vofa_start();
+	// vofa_start();   /* 暂时关闭: ISR 每 50us 发一帧会和主循环的编码器调试帧互相干扰 */
 }
 
 /**

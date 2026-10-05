@@ -840,7 +840,8 @@ typedef struct
     uint32_t i, j, k;
     float p_raw[2];
     float p_err[256];
-    float p_error_arr[14 * 2 * 256];
+    /* G431RBT6 连续 RAM 只有 22KB。原表约 28KB，工程里没有引用，缩成 1。 */
+    float p_error_arr[1];
     float mean;
     int ind;
     float temp;
@@ -1386,7 +1387,8 @@ typedef struct
     float enc_lut;
     float enc_table[256];
     float aco_lut;
-    float aco_table[3840];
+    /* 原表 3840 点约 15KB，当前程序未使用，缩成 1 才能放进 G431。 */
+    float aco_table[1];
 } pmsm_map_t;
 
 // PMSM structure

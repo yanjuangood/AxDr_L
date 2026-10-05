@@ -31,6 +31,8 @@
 /* USER CODE BEGIN Includes */
 #include "common.h"
 #include "modlue.h"
+#include "mt6701.h"
+#include "ntc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -108,6 +110,9 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_Delay(1000);
 
+  /* MT6701 磁编码器: 自动探测 SSI 的 SPI 模式 (会重配 SPI1 为 8bit) */
+  mt6701_init();
+
   HAL_TIM_Base_Start(&htim3);
   // HAL_TIM_Base_Start_IT(&htim1);
 
@@ -123,6 +128,7 @@ int main(void)
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 3900);
 
   pmsm_init();
+  ntc_init();
   foc_pwm_start();
   
   /* USER CODE END 2 */
@@ -134,6 +140,25 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* ===== 调试输出 (100Hz), 用 VOFA+ (数据引擎选 JustFloat) 看波形 =====
+     * 通道: 0=机械角(0~360)   1=磁场状态 mg      2=CRC通过
+     *       3=SPI模式         4=累计失败次数     5=累计角度(带圈数)
+     *       6=MOS温度(℃)      7=绕组温度(℃)
+     */
+    mt6701_read(&mt6701);
+    ntc_update();
+
+    vofa_send_data(0, mt6701.angle);
+    vofa_send_data(1, (float)mt6701.mg);
+    vofa_send_data(2, (float)mt6701.crc_ok);
+    vofa_send_data(3, (float)mt6701.spi_mode);
+    vofa_send_data(4, (float)mt6701.err_cnt);
+    vofa_send_data(5, mt6701.total_rad);
+    vofa_send_data(6, ntc_mos.temp);      /* NTC1 板载 MOS   (PB1)  */
+    vofa_send_data(7, ntc_coil.temp);     /* NTC3 外接绕组   (PB12) */
+    vofa_sendframetail();
+
+    HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }

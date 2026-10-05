@@ -1,0 +1,68 @@
+# =============================================================================
+#  AxDr_L — Git 忽略规则
+#  原则: 只提交源码/工程配置，不提交任何编译产物
+# =============================================================================
+
+# ---------- CMake / CLion 构建目录 ----------
+build/
+cmake-build-*/
+!cmake-build-*/.gitignore
+
+# ---------- Keil MDK 输出目录 ----------
+# 注意: 仓库根是 AxDr_L, 工程在 1.AxDr_Drag_VF/ 子目录里。
+#       含斜杠的模式会被锚定到本文件所在目录, 所以必须加 **/ 前缀
+#       才能匹配到任意层级。
+# 里面全是 .o/.axf/.hex/.map 等中间文件, 每次编译都变
+**/MDK-ARM/AxDr/
+**/MDK-ARM/Objects/
+**/MDK-ARM/Listings/
+
+# 注意: 不要忽略下面这两个, 它们是真实的工程配置
+#   MDK-ARM/DebugConfig/*.dbgconf   Keil 调试器配置
+#   MDK-ARM/RTE/**/RTE_Components.h Keil RTE 组件配置
+
+# ---------- ARM 编译器中间产物 ----------
+*.o
+*.d
+*.crf
+*.axf
+*.lnp
+*.dep
+*.htm
+*.build_log.htm
+*.map
+*.iex
+*.sct.bak
+*.uvguix.*
+
+# 注意: 不忽略 *.sct 和 *.uvprojx/*.uvoptx
+#   MDK-ARM/*.sct        = CubeMX 提供的链接脚本模板，要保留
+#   MDK-ARM/AxDr/AxDr.sct = 生成的，已被上面的目录规则忽略
+
+# ---------- CLion / JetBrains ----------
+.idea/
+*.iml
+!.idea/.gitignore
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+*.swp
+*.swo
+*~
+Thumbs.db
+desktop.ini
+
+# ---------- 备份文件 ----------
+*.bak
+*.orig
+*.rej
+vofa.c.gbk.bak
+*.before_*
+*.log
+*.lst
+
+# ---------- 本地临时目录 (DSH 沙箱修复残留) ----------
+dsh-acl-recovery/
+
+# ---------- 烧录脚本产物 ----------
+*.hex.bak
