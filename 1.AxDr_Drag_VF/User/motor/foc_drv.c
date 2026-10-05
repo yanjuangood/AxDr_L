@@ -131,6 +131,11 @@ void pmsm_init(void)
     pm.ctrl_bit = start;
 
     foc_get_curr_off();
+
+    /* 保护阈值初始化 + 电流零偏自检。
+     * 必须放在 foc_get_curr_off() 之后 —— 自检要用刚采到的零偏值判断
+     * VREF 有没有建立起来 (板上 U14 没焊的话这一步会置 ioff_err) */
+    pmsm_protect_init();
 }
 
 /**
@@ -184,7 +189,12 @@ _RAM_FUNC void foc_para_calc(pmsm_t* pm)
 **/
 void foc_get_curr_off(void)
 {
-    float sum_a, sum_b, sum_c;
+    /* 注意: 这里的累加变量必须显式清零。原来是 float sum_a, sum_b, sum_c;
+       没给初值 —— 零偏会累加到栈上的垃圾值, 四路电流全部失真 */
+    float sum_a = 0.0f;
+    float sum_b = 0.0f;
+    float sum_c = 0.0f;
+
     for (int i = 0; i < 1000; i++)
     {
         HAL_Delay(1);

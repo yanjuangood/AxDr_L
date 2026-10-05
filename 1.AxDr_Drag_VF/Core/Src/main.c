@@ -144,9 +144,10 @@ int main(void)
      * 通道: 0=机械角(0~360)   1=磁场状态 mg      2=CRC通过
      *       3=SPI模式         4=累计失败次数     5=累计角度(带圈数)
      *       6=MOS温度(℃)      7=绕组温度(℃)
+     *       8=故障位掩码      9=母线电压(V)     10=A相电流(A)   11=q轴电流(A)
      */
     mt6701_read(&mt6701);
-    ntc_update();
+    temp_calc();
 
     vofa_send_data(0, mt6701.angle);
     vofa_send_data(1, (float)mt6701.mg);
@@ -156,6 +157,10 @@ int main(void)
     vofa_send_data(5, mt6701.total_rad);
     vofa_send_data(6, ntc_mos.temp);      /* NTC1 板载 MOS   (PB1)  */
     vofa_send_data(7, ntc_coil.temp);     /* NTC3 外接绕组   (PB12) */
+    vofa_send_data(8, (float)pm.fault.all);  /* 故障掩码: 0 = 正常 */
+    vofa_send_data(9, pm.foc.vbus);          /* 母线电压 (V) */
+    vofa_send_data(10, pm.foc.i_a);          /* A 相电流 (A) */
+    vofa_send_data(11, pm.foc.i_q);          /* q 轴电流 (A) */
     vofa_sendframetail();
 
     HAL_Delay(10);

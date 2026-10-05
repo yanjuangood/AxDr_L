@@ -674,6 +674,21 @@
               <FileType>1</FileType>
               <FilePath>..\User\motor\ntc.c</FilePath>
             </File>
+            <File>
+              <FileName>pid.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\User\motor\pid.c</FilePath>
+            </File>
+            <File>
+              <FileName>foc_loop.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\User\motor\foc_loop.c</FilePath>
+            </File>
+            <File>
+              <FileName>foc_protect.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\User\motor\foc_protect.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

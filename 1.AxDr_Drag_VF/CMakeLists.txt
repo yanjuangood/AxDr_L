@@ -116,8 +116,11 @@ set(APP_SOURCES
     User/motor/foc_calc.c
     User/motor/foc_ctrl.c
     User/motor/foc_drv.c
+    User/motor/foc_loop.c
+    User/motor/foc_protect.c
     User/motor/mt6701.c
     User/motor/ntc.c
+    User/motor/pid.c
 
     # --- 启动文件 (GCC 语法) ---
     startup_stm32g431xx.S

@@ -12,6 +12,7 @@ _RAM_FUNC void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
     foc_adc_sample(&pm);
     foc_para_calc(&pm);
+    pmsm_fault_check(&pm);   /* 先查故障: 有故障会把 ctrl_bit 打到 reset 停机 */
     pmsm_state_ctrl(&pm);
 	// vofa_start();   /* 暂时关闭: ISR 每 50us 发一帧会和主循环的编码器调试帧互相干扰 */
 }
@@ -26,17 +27,27 @@ _RAM_FUNC void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 **/
 _RAM_FUNC void pmsm_state_ctrl(pmsm_t* pm)
 {
+    /* 保证「关输出」只执行一次。
+     * 原来 reset 分支每 50us 都会调一次 HAL_TIM_PWM_Stop —— 只要 ctrl_bit
+     * 被置成 reset (故障停机 / 上位机复位), 就会在 20kHz 中断里空耗 CPU */
+    static uint8_t pwm_stopped = 0u;
+
     // State machine for PMSM control
     switch (pm->ctrl_bit)
     {
     case start:
         // Initialize PWM and transition to precharge state
+        pwm_stopped = 0u;
         foc_pwm_start();
         foc_pwm_duty_set(pm);
         break;
     case reset:
          //Reset all controllers and stop PWM
-        foc_pwm_stop();
+        if (pwm_stopped == 0u)
+        {
+            foc_pwm_stop();
+            pwm_stopped = 1u;
+        }
         break;
     case opera:
         // Normal operation mode control
@@ -57,7 +68,26 @@ _RAM_FUNC void pmsm_state_ctrl(pmsm_t* pm)
 **/
 _RAM_FUNC void pmsm_mode_ctrl(pmsm_t* pm)
 {
-	force_volt_mode(pm); // V/f control mode
+	/* 默认 pm->foc.mode == foc_volt_mode (枚举值 0), 保持原来的 V/f 开环行为。
+	 * 只有上位机显式把 foc.mode 切过去, 才会走闭环分支 */
+	if (pm->foc.mode == foc_volt_mode)
+	{
+		force_volt_mode(pm); // V/f control mode
+	}
+	else if (pm->foc.mode == foc_vel_mode)
+	{
+		/* 速度闭环: 先取电角度, 无故障才跑 */
+		sensory_pos_calc(pm);
+		if (pm->fault.all == 0u)
+		{
+			foc_vel(pm, pm->ctrl.wr_set, 0.0f, pm->foc.p_e);
+		}
+	}
+	else
+	{
+		/* 电流闭环 (foc_curr_mode / foc_pos_mode) */
+		force_curr_mode(pm);
+	}
 }
 
 /**
