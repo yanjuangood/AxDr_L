@@ -91,9 +91,24 @@ typedef __I uint8_t vcu8;
   theta = (theta < 0.0f) ? theta + M_2PI : theta;
 
 // Mathematical constants
+/* ⚠️ 注意 M_PI / M_2_PI 这两个名字 math.h 里也有, 含义还不一样:
+ *      math.h:  M_PI   = π     = 3.14159265358979 (double)
+ *               M_2_PI = 2/π   = 0.63661977236758  <-- 是 2/π, 不是 2π !
+ *      本文件:  M_PI   = π     (float 精度)
+ *               M_2_PI = 2π    = 6.28318530716     <-- 完全不同的东西
+ *   所以这里必须 undef 再定义, 否则编译器报 'M_PI redefined'。
+ *   历史原因这个名字没法改了(全工程都在用), 但要知道它覆盖了标准含义:
+ *   在本工程里 M_2_PI 一律表示 2π。
+ *   如果哪天要引入第三方库里用标准 M_2_PI 的代码, 一定先确认它拿到的是哪个值。 */
+#ifdef M_PI
+#undef M_PI
+#endif
+#ifdef M_2_PI
+#undef M_2_PI
+#endif
 #define M_PI (3.14159265358f)         // Pi
 #define M_2PI (6.28318530716f)        // 2 * Pi
-#define M_2_PI (6.28318530716f)        // 2 * Pi
+#define M_2_PI (6.28318530716f)        // 2 * Pi  (⚠️ 覆盖了 math.h 的 2/π)
 #define div_M_2PI (0.159154943092391467f)        // 1/(2 * Pi)
 #define SQRT3 (1.73205080757f)        // Square root of 3
 #define SQRT3_BY_2 (0.86602540378f)   // Square root of 3 divided by 2

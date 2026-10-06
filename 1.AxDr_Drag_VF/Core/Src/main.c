@@ -89,7 +89,7 @@ uint16_t adc2_buff[4];
  *
  *  ⚠️ 两个都开的话 HWTEST_MODE 优先, 不会驱动电机。
  * ======================================================================== */
-#define HWTEST_MODE         1
+#define HWTEST_MODE         0
 #define OPENLOOP_TEST       1
 
 /* USER CODE END 0 */

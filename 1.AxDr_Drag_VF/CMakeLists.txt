@@ -33,6 +33,8 @@ set(MCU_FLAGS
 add_compile_options(
     ${MCU_FLAGS}
     -Wall
+    -Wextra
+    -Wno-unused-parameter
     -fdata-sections
     -ffunction-sections
     $<$<CONFIG:Debug>:-Og>
