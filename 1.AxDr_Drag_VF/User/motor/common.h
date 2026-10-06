@@ -1544,6 +1544,10 @@ void openloop_test_start(void);
 void openloop_test_stop(void);
 void openloop_test_run(void);
 
+/* 硬件自检: 三相固定占空比 (0.25/0.50/0.75), 不接电机量三个输出端对 GND。
+ * 期望 2.85 / 5.70 / 8.55 V (母线 11.4V)。实现见 foc_loop.c */
+void hwt_self_test_run(void);
+
 void sensory_pos_calc(pmsm_t* pm);
 void senless_pos_calc(pmsm_t* pm);
 void pos_calc(pmsm_t* pm);
