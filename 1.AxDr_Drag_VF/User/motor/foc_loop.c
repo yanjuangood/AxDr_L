@@ -382,6 +382,14 @@ static uint8_t ol_hard_fault(void)
 **/
 void hwt_self_test_run(void)
 {
+    /* 必须先让 PWM 输出真正的使能, 否则光写 CCR 是没用的:
+     *   ctrl_bit == reset -> pmsm_state_ctrl 会 foc_pwm_stop() -> MOE=0, 输出关掉
+     *   ctrl_bit == start -> 20kHz 中断每 50us 调 foc_pwm_duty_set() 把 CCR 改回 50%
+     * 所以切到 opera, 并把 foc.mode 设成 foc_hwt_mode
+     * (pmsm_mode_ctrl 收到这个模式什么都不做, 不会覆盖我们的占空比)。 */
+    pm.foc.mode   = foc_hwt_mode;
+    pm.ctrl_bit   = opera;
+
     pm.foc.dtc_a = HWT_DUTY_A;
     pm.foc.dtc_b = HWT_DUTY_B;
     pm.foc.dtc_c = HWT_DUTY_C;

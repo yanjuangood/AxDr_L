@@ -103,6 +103,14 @@ void pmsm_2804_init(void)
     pm.ctrl.wm_acc = 200.0f;
     pm.ctrl.wm_dec = 200.0f;
 
+    /* ⚠️ 这两个必须初始化!
+     * foc_spd_pi_calc() 最后会做 pm->ctrl.iq_set = sat1_datf(iq, pmax_iq, nmax_iq),
+     * 而这两个变量在 pmsm_init() 的 memset 之后一直是 0 ——
+     * 结果就是速度环算出来的 iq 被夹成 0, 速度模式一点转矩都没有。
+     * 上限按电机额定电流给: 2804 额定 0.5A, 留一倍余量取 1.0A。 */
+    pm.ctrl.pmax_iq = 1.0f;
+    pm.ctrl.nmax_iq = -1.0f;
+
     /* 电角度零点, 需要标定。标定前闭环不要开 */
     pm.para.e_off = 0.0f;
     pm.para.r_off = 0.0f;

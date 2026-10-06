@@ -82,6 +82,12 @@ _RAM_FUNC void pmsm_mode_ctrl(pmsm_t* pm)
 	{
 		force_volt_mode(pm); // V/f control mode
 	}
+	else if (pm->foc.mode == foc_hwt_mode)
+	{
+		/* 硬件自检: 故意什么都不做。
+		 * 占空比由主循环的 hwt_self_test_run() 每 10ms 写一次。
+		 * 如果这里再调用 foc_volt(), 20kHz 的 ISR 会把自检图案冲掉。 */
+	}
 	else if (pm->foc.mode == foc_vel_mode)
 	{
 		/* 速度闭环: 先取电角度, 无故障才跑 */

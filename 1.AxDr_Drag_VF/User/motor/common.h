@@ -211,6 +211,12 @@ typedef enum
 	foc_vel_mode,
 	foc_pos_mode,
 
+	/* 硬件自检模式: pmsm_mode_ctrl() 收到这个值什么都不做,
+	 * 由主循环的 hwt_self_test_run() 直接写 CCR。
+	 * 加这个模式是因为: ctrl_bit 停在 reset 时 PWM 输出是关的(MOE=0),
+	 * 光写 CCR 没用; 停在 start 又会被 20kHz 中断每 50us 改回 50%。 */
+	foc_hwt_mode,
+
 } foc_mode_e;
 
 // FOC parameter structure
