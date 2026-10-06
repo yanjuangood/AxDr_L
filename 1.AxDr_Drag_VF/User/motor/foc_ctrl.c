@@ -35,22 +35,22 @@ _RAM_FUNC void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 **/
 _RAM_FUNC void pmsm_state_ctrl(pmsm_t* pm)
 {
-    /* 保证「关输出」只执行一次。
-     * 原来 reset 分支每 50us 都会调一次 HAL_TIM_PWM_Stop —— 只要 ctrl_bit
-     * 被置成 reset (故障停机 / 上位机复位), 就会在 20kHz 中断里空耗 CPU */
-    static uint8_t pwm_stopped = 0u;
+    /* 1 = 三相桥已关闭。上电默认关闭。
+     * start 里如果每 50us 调 foc_pwm_start()，桥会以 50% 互补 PWM 空转，
+     * 死区不够时上下管直通，MOS 不接电机也会烫。输出只在进入 opera 时开一次。 */
+    static uint8_t pwm_stopped = 1u;
 
-    // State machine for PMSM control
     switch (pm->ctrl_bit)
     {
     case start:
-        // Initialize PWM and transition to precharge state
-        pwm_stopped = 0u;
-        foc_pwm_start();
+        if (pwm_stopped == 0u)
+        {
+            foc_pwm_stop();
+            pwm_stopped = 1u;
+        }
         foc_pwm_duty_set(pm);
         break;
     case reset:
-         //Reset all controllers and stop PWM
         if (pwm_stopped == 0u)
         {
             foc_pwm_stop();
@@ -58,7 +58,12 @@ _RAM_FUNC void pmsm_state_ctrl(pmsm_t* pm)
         }
         break;
     case opera:
-        // Normal operation mode control
+        if (pwm_stopped != 0u)
+        {
+            foc_pwm_duty_set(pm);
+            foc_pwm_start();
+            pwm_stopped = 0u;
+        }
         pmsm_mode_ctrl(pm);
         break;
     default:

@@ -1,4 +1,5 @@
 #include "common.h"
+#include "stm32g4xx_ll_tim.h"
 
 _RAM_DATA pmsm_t pm;
 
@@ -39,7 +40,22 @@ void pmsm_board_init(void)
     pm.board.Rt_rotor_Ka = 273.15f;
     pm.board.Rt_rotor_B = 3500.0f;  /* 硬件 NTC: HNTC0603-103F3450FA */
 
-    pm.board.dead_time = 0.5f; //us
+    /* 1us。原先写了 0.5us 但从未写进 TIM1->BDTR，死区实际是 0。
+     * 上电后 start 状态就以 50% 互补 PWM 开关，每个沿上下管直通，空载 MOS 也会烫。 */
+    pm.board.dead_time = 1.0f;
+}
+
+/**
+ * 把 pm.board.dead_time (单位 us) 写进 TIM1 死区寄存器。
+ * 必须在三相 PWM 使能之前调用。定时器时钟在 APB2 分频为 1 时等于 SystemCoreClock。
+ */
+static void foc_deadtime_apply(void)
+{
+    uint32_t dt_ns = (uint32_t)(pm.board.dead_time * 1000.0f);
+    uint8_t dtg = (uint8_t)__LL_TIM_CALC_DEADTIME(SystemCoreClock,
+                                                  LL_TIM_CLOCKDIVISION_DIV1,
+                                                  dt_ns);
+    HAL_TIMEx_ConfigDeadTime(&htim1, dtg);
 }
 
 /**
@@ -162,7 +178,9 @@ void pmsm_init(void)
 
     pmsm_board_init();
     pmsm_peroid_init();
+    foc_deadtime_apply();
 
+    /* 停在 start，三相桥先不要开。输出留到进入 opera 时由状态机开一次。 */
     pm.ctrl_bit = start;
 
     foc_get_curr_off();

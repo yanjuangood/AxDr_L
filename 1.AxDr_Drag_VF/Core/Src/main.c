@@ -89,7 +89,7 @@ uint16_t adc2_buff[4];
  *
  *  ⚠️ 两个都开的话 HWTEST_MODE 优先, 不会驱动电机。
  * ======================================================================== */
-#define HWTEST_MODE         1
+#define HWTEST_MODE         0
 #define OPENLOOP_TEST       1
 
 /* USER CODE END 0 */
@@ -155,7 +155,8 @@ int main(void)
 
   pmsm_init();
   ntc_init();
-  foc_pwm_start();
+  /* 三相桥先保持关闭，进入 opera（开环开始）时由状态机打开。
+   * 这里若 foc_pwm_start()，上电后就会 50% 互补开关，MOS 空载发热。 */
   
   /* USER CODE END 2 */
 
