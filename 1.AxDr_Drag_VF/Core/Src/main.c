@@ -152,6 +152,8 @@ int main(void)
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 3900);
+  /* 六路栅极先拉成 GPIO 低电平。MOE 保持打开，否则注入 ADC 没有触发。 */
+  foc_pwm_stop();
 
   pmsm_init();
   ntc_init();
@@ -169,9 +171,9 @@ int main(void)
     /* USER CODE BEGIN 3 */
     /* ===== 调试输出 (100Hz), 用 VOFA+ (数据引擎选 JustFloat) 看波形 =====
      * 通道: 0=机械角(0~360)   1=磁场状态 mg      2=CRC通过
-     *       3=SPI模式         4=累计失败次数     5=累计角度(带圈数)
-     *       6=MOS温度(℃)      7=绕组温度(℃)
-     *       8=故障位掩码      9=母线电压(V)     10=A相电流(A)   11=q轴电流(A)
+     *       3=SPI模式         4=相电流原始计数峰值   5=累计角度(带圈数)
+     *       6=MOS温度(℃)      7=q轴电压给定(V)  0 表示现在没在驱动
+     *       8=故障位掩码      9=母线电压(V)     10=A相原始计数  11=C相原始计数
      */
     mt6701_read(&mt6701);
     temp_calc();
@@ -207,10 +209,29 @@ int main(void)
     vofa_send_data(1, (float)mt6701.mg);
     vofa_send_data(2, (float)mt6701.crc_ok);
     vofa_send_data(3, (float)mt6701.spi_mode);
-    vofa_send_data(4, (float)mt6701.err_cnt);
+    /* 峰值一直保持。开环结束、PWM 关掉之后，仍能看出刚才有没有电流灌进去。
+     * 空载大约 20。驱动起来应明显超过 40。 */
+    {
+        static uint16_t i_raw_peak = 0u;
+        uint16_t i_now = pm.adc.ia;
+
+        if (pm.adc.ib > i_now)
+        {
+            i_now = pm.adc.ib;
+        }
+        if (pm.adc.ic > i_now)
+        {
+            i_now = pm.adc.ic;
+        }
+        if (i_now > i_raw_peak)
+        {
+            i_raw_peak = i_now;
+        }
+        vofa_send_data(4, (float)i_raw_peak);
+    }
     vofa_send_data(5, mt6701.total_rad);
     vofa_send_data(6, ntc_mos.temp);      /* NTC1 板载 MOS   (PB1)  */
-    vofa_send_data(7, ntc_coil.temp);     /* NTC3 外接绕组   (PB12) */
+    vofa_send_data(7, pm.ctrl.vq_set);    /* 0 = 没在输出电压 */
     vofa_send_data(8, (float)pm.fault.all);  /* 故障掩码: 0 = 正常 */
     vofa_send_data(9, pm.foc.vbus);          /* 母线电压 (V) */
     /* 10/11 发原始 ADC 计数而不是换算后的电流:

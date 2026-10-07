@@ -271,14 +271,58 @@ void foc_get_curr_off(void)
 * @details:    启动三路PWM输出，分别对应三相电机控制
 ***********************************************************************
 **/
+static void foc_gate_pins_low(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+
+    /* 先写成低，再把引脚从定时器复用改成推挽输出。
+     * 关断时如果只关 MOE，这几根脚会高阻，FD6288 输入悬空，三相输出被拉到母线。 */
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+
+    gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10;
+    HAL_GPIO_WritePin(GPIOA, gpio.Pin, GPIO_PIN_RESET);
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    gpio.Pin = GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+    HAL_GPIO_WritePin(GPIOB, gpio.Pin, GPIO_PIN_RESET);
+    HAL_GPIO_Init(GPIOB, &gpio);
+}
+
+static void foc_gate_pins_af(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+
+    gpio.Mode = GPIO_MODE_AF_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+
+    gpio.Pin = GPIO_PIN_13 | GPIO_PIN_14;
+    gpio.Alternate = GPIO_AF6_TIM1;
+    HAL_GPIO_Init(GPIOB, &gpio);
+
+    gpio.Pin = GPIO_PIN_15;
+    gpio.Alternate = GPIO_AF4_TIM1;
+    HAL_GPIO_Init(GPIOB, &gpio);
+
+    gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10;
+    gpio.Alternate = GPIO_AF6_TIM1;
+    HAL_GPIO_Init(GPIOA, &gpio);
+}
+
 _RAM_FUNC void foc_pwm_start(void)
 {
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
+    TIM_TypeDef *tim = htim1.Instance;
+
+    /* MOE 保持为 1。拉低 MOE 会让 TIM1_CC4 不再触发注入 ADC，
+     * 母线电压一直是 0，20kHz 控制环停掉，三相桥永远打不开。 */
+    tim->CCER |= (TIM_CCER_CC1E | TIM_CCER_CC1NE |
+                  TIM_CCER_CC2E | TIM_CCER_CC2NE |
+                  TIM_CCER_CC3E | TIM_CCER_CC3NE);
+    tim->BDTR |= TIM_BDTR_MOE;
+    tim->CR1  |= TIM_CR1_CEN;
+    foc_gate_pins_af();
 }
 
 /**
@@ -291,12 +335,8 @@ _RAM_FUNC void foc_pwm_start(void)
 **/
 _RAM_FUNC void foc_pwm_stop(void)
 {
-    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
-    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
-    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_2);
-    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
-    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_3);
+    /* 六路栅极脚直接拉低。不要清 MOE，也不要停 TIM1，CH4 还要触发 ADC。 */
+    foc_gate_pins_low();
 }
 
 extern uint16_t adc1_buff[2];

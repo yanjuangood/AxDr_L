@@ -60,7 +60,11 @@ _RAM_FUNC void pmsm_state_ctrl(pmsm_t* pm)
     case opera:
         if (pwm_stopped != 0u)
         {
-            foc_pwm_duty_set(pm);
+            /* 自检占空比由主循环写入。这里若先打成 50%，三相输出会一样。 */
+            if (pm->foc.mode != foc_hwt_mode)
+            {
+                foc_pwm_duty_set(pm);
+            }
             foc_pwm_start();
             pwm_stopped = 0u;
         }

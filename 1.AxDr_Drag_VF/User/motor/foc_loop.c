@@ -298,16 +298,22 @@ _RAM_FUNC void force_curr_mode(pmsm_t* pm)
 #define OL_STALL_SEC        1.5f    /* 持续这么久才判, 避开起步瞬间 */
 
 /* 匀速保持时间 (秒), 之后自动减速停机。
- * 开环跑 6 秒再自动停, 避免忘记断电导致电机长时间堵转发烫 */
-#define OL_HOLD_SEC     6.0f
+ * 60 秒便于用 VOFA+ 观察; 跑完自动停, 不会忘记断电导致堵转发烫 */
+#define OL_HOLD_SEC     60.0f
 
 /* 主循环调用周期 (秒)。main.c 里是 HAL_Delay(10) */
 #define OL_TS           0.01f
+
+/* 定位时间 (秒)。电压矢量钉在 0 度, 让转子先对到已知位置再开始加速。
+ * 这段 wr=0, 堵转保护不会介入。
+ * 原来 8 秒太长 (上电 5s 等待 + 8s 对准 = 13 秒才转起来), 3 秒足够定位。 */
+#define OL_ALIGN_SEC    3.0f
 
 /* 状态机 */
 enum
 {
     OL_IDLE = 0,
+    OL_ALIGN,
     OL_ACCEL,
     OL_HOLD,
     OL_DECEL
@@ -316,6 +322,7 @@ enum
 static uint8_t ol_state = OL_IDLE;
 static float   ol_wr    = 0.0f;      /* 当前速度给定 */
 static float   ol_hold  = 0.0f;      /* 匀速计时 */
+static float   ol_align = 0.0f;      /* 定位计时 */
 
 #if OL_STALL_ENABLE
 static float   ol_stall_t    = 0.0f; /* 堵转持续计时 */
@@ -382,18 +389,23 @@ static uint8_t ol_hard_fault(void)
 **/
 void hwt_self_test_run(void)
 {
-    /* 必须先让 PWM 输出真正的使能, 否则光写 CCR 是没用的:
-     *   ctrl_bit == reset -> pmsm_state_ctrl 会 foc_pwm_stop() -> MOE=0, 输出关掉
-     *   ctrl_bit == start -> 20kHz 中断每 50us 调 foc_pwm_duty_set() 把 CCR 改回 50%
-     * 所以切到 opera, 并把 foc.mode 设成 foc_hwt_mode
-     * (pmsm_mode_ctrl 收到这个模式什么都不做, 不会覆盖我们的占空比)。 */
-    pm.foc.mode   = foc_hwt_mode;
-    pm.ctrl_bit   = opera;
+    static uint8_t started = 0u;
 
+    /* 占空比先写进 CCR，再开输出。中断里不再改成 50%。 */
     pm.foc.dtc_a = HWT_DUTY_A;
     pm.foc.dtc_b = HWT_DUTY_B;
     pm.foc.dtc_c = HWT_DUTY_C;
     foc_pwm_run(&pm);
+
+    pm.foc.mode   = foc_hwt_mode;
+    pm.ctrl_bit   = opera;
+    pm.ctrl.vq_set = 1.5f;   /* I7=1.5 表示这组固定 PWM 正在输出 */
+
+    if (started == 0u)
+    {
+        foc_pwm_start();
+        started = 1u;
+    }
 }
 
 /**
@@ -413,7 +425,8 @@ void openloop_test_start(void)
 
     ol_wr    = 0.0f;
     ol_hold  = 0.0f;
-    ol_state = OL_ACCEL;
+    ol_align = 0.0f;
+    ol_state = OL_ALIGN;
 
 #if OL_STALL_ENABLE
     ol_stall_t   = 0.0f;
@@ -435,6 +448,7 @@ void openloop_test_stop(void)
     ol_state = OL_IDLE;
     ol_wr    = 0.0f;
     ol_hold  = 0.0f;
+    ol_align = 0.0f;
 
     pm.ctrl.wr_set = 0.0f;
     pm.ctrl.vd_set = 0.0f;
@@ -469,6 +483,15 @@ void openloop_test_run(void)
 
     switch (ol_state)
     {
+    case OL_ALIGN:
+        ol_wr = 0.0f;
+        ol_align += OL_TS;
+        if (ol_align >= OL_ALIGN_SEC)
+        {
+            ol_state = OL_ACCEL;
+        }
+        break;
+
     case OL_ACCEL:
         ol_wr += OL_RAMP_RATE * OL_TS;
         if (ol_wr >= OL_WR_TARGET)
