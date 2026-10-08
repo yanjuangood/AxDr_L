@@ -106,6 +106,14 @@ static void mt6701_apply_mode(uint8_t mode)
 
 /* ===================== 对外接口 ===================== */
 
+/**
+***********************************************************************
+* @brief:      mt6701_init(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    把 SPI1 配成 8 位，并在 4 种 CPOL/CPHA 里选出 CRC 能通过的模式
+***********************************************************************
+**/
 void mt6701_init(void)
 {
     uint8_t best_score = 0u;
@@ -180,6 +188,14 @@ void mt6701_init(void)
     HAL_Delay(1);
 }
 
+/**
+***********************************************************************
+* @brief:      mt6701_read(mt6701_t *e)
+* @param[in]:  e  指向编码器数据结构的指针
+* @retval:     1 CRC 通过；0 传输失败或 CRC 不通过
+* @details:    读一帧 24 位 SSI，校验后更新机械角、磁场状态和累计圈数
+***********************************************************************
+**/
 uint8_t mt6701_read(mt6701_t *e)
 {
     uint32_t f;
@@ -239,6 +255,14 @@ uint8_t mt6701_read(mt6701_t *e)
     return e->crc_ok;
 }
 
+/**
+***********************************************************************
+* @brief:      mt6701_elec_angle(float pole_pairs)
+* @param[in]:  pole_pairs  极对数
+* @retval:     电角度，范围 [0, 2pi)
+* @details:    用累计机械角乘极对数，再归一化
+***********************************************************************
+**/
 float mt6701_elec_angle(float pole_pairs)
 {
     float a = mt6701.total_rad * pole_pairs;
@@ -251,6 +275,14 @@ float mt6701_elec_angle(float pole_pairs)
     return a;
 }
 
+/**
+***********************************************************************
+* @brief:      mt6701_angle_offset(float offset_deg)
+* @param[in]:  offset_deg  要减去的机械角偏移，单位度
+* @retval:     去掉偏移后的机械角，范围 [0, 360)
+* @details:    安装零点补偿。只改返回值，不改 mt6701.angle
+***********************************************************************
+**/
 float mt6701_angle_offset(float offset_deg)
 {
     float a = mt6701.angle - offset_deg;

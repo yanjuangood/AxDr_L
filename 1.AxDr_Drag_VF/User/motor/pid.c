@@ -265,9 +265,8 @@ float serial_pid_ctrl1(pid_para_t* pid, float ref, float fback, float i_max, flo
 * @param[in]:  ref    参考值
 * @param[in]:  fback  反馈值
 * @retval:     float  控制器输出 (已限幅)
-* @details:    PDFF (Pseudo-Derivative Feedback with Feedforward)。
-*              微分作用在「反馈」而不是「误差」上 —— 参考值阶跃时不会产生
-*              微分冲击 (derivative kick)。适合速度环这种参考会突变的场合。
+* @details:    伪微分反馈前馈。微分作用在反馈上，参考值阶跃时不会产生微分冲击。
+*              适合速度环这种参考会突变的场合。
 *              注意: 这里 pre_err 存的是上一次的反馈值, 不是误差
 ***********************************************************************
 **/

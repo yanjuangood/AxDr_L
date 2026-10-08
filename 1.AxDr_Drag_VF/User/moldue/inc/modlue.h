@@ -1,7 +1,7 @@
 #include "main.h"
 
 
-// Union for different data representations
+/* 浮点数、整数和字节数组共用同一块内存，方便按字节发送 */
 typedef union
 {
 	float f_val;
@@ -12,7 +12,7 @@ typedef union
 
 
 
-/* VOFA functions */
+/* 上位机波形发送 */
 void usb_printf(const char *format, ...);
 void vofa_start(void);
 void vofa_send_data(uint8_t num, float data); 

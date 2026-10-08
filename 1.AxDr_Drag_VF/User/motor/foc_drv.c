@@ -269,10 +269,11 @@ void foc_get_curr_off(void)
 
 /**
 ***********************************************************************
-* @brief:      foc_pwm_start(void)
+* @brief:      foc_gate_pins_low(void)
 * @param[in]:  void
 * @retval:     void
-* @details:    启动三路PWM输出，分别对应三相电机控制
+* @details:    六路栅极脚改成推挽输出并拉低。关断时不能只靠 MOE，
+*              否则引脚高阻，FD6288 输入悬空，三相输出会被拉到母线
 ***********************************************************************
 **/
 static void foc_gate_pins_low(void)
@@ -294,6 +295,14 @@ static void foc_gate_pins_low(void)
     HAL_GPIO_Init(GPIOB, &gpio);
 }
 
+/**
+***********************************************************************
+* @brief:      foc_gate_pins_af(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    六路栅极脚切回 TIM1 复用。PB15 是 AF4，其余是 AF6
+***********************************************************************
+**/
 static void foc_gate_pins_af(void)
 {
     GPIO_InitTypeDef gpio = {0};
@@ -315,6 +324,14 @@ static void foc_gate_pins_af(void)
     HAL_GPIO_Init(GPIOA, &gpio);
 }
 
+/**
+***********************************************************************
+* @brief:      foc_pwm_start(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    打开三相互补输出。MOE 保持为 1，否则 TIM1_CC4 不再触发注入 ADC
+***********************************************************************
+**/
 _RAM_FUNC void foc_pwm_start(void)
 {
     TIM_TypeDef *tim = htim1.Instance;
@@ -345,6 +362,14 @@ _RAM_FUNC void foc_pwm_stop(void)
 
 extern uint16_t adc1_buff[2];
 extern uint16_t adc2_buff[4];
+/**
+***********************************************************************
+* @brief:      foc_adc_sample(pmsm_t* pm)
+* @param[in]:  pm  指向 PMSM 控制结构体的指针
+* @retval:     void
+* @details:    读取注入组电流、规则组相电压和母线电压，并做零偏补偿换算成安培
+***********************************************************************
+**/
 _RAM_FUNC void foc_adc_sample(pmsm_t* pm)
 {
 	pm->adc.ia = ADC1->JDR3;
@@ -356,7 +381,7 @@ _RAM_FUNC void foc_adc_sample(pmsm_t* pm)
 	pm->adc.vc = adc2_buff[3];
     pm->adc.vbus     = ADC2->JDR1;
 
-    //  Convert ADC values to actual currents with offset compensation and scaling
+    /* 减去零偏再乘比例，把采样计数换成安培 */
     pm->foc.i_a = ((float) pm->adc.ia - pm->adc.ia_off) * pm->board.i_ratio;
     pm->foc.i_b = ((float) pm->adc.ib - pm->adc.ib_off) * pm->board.i_ratio;
     pm->foc.i_c = ((float) pm->adc.ic - pm->adc.ic_off) * pm->board.i_ratio;
@@ -377,6 +402,14 @@ _RAM_FUNC void foc_pwm_run(pmsm_t* pm)
 	htim1.Instance->CCR3 = (uint16_t)(pm->foc.dtc_c * PWM_ARR());
 }
 
+/**
+***********************************************************************
+* @brief:      foc_pwm_duty_set(pmsm_t* pm)
+* @param[in]:  pm  指向 PMSM 控制结构体的指针
+* @retval:     void
+* @details:    三相占空比都写成 50%。上桥打开前先放在中点，线电压为 0
+***********************************************************************
+**/
 _RAM_FUNC void foc_pwm_duty_set(pmsm_t* pm)
 {
     htim1.Instance->CCR1 = (uint16_t)(0.5f * PWM_ARR());

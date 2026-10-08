@@ -16,7 +16,7 @@
 #define _RAM_DATA   __attribute__((section(".data")))
 
 
-// Type definitions for various data types
+/* 常用数据类型 */
 typedef float f32;
 typedef double f64;
 typedef int64_t s64;
@@ -61,11 +61,11 @@ typedef __I uint32_t vcu32;
 typedef __I uint16_t vcu16;
 typedef __I uint8_t vcu8;
 
-// Macros for mathematical operations
-#define SIGN(x) (((x) < 0.0f) ? -1.0f : 1.0f) // Return the sign of the argument
-#define NORM2_f(x, y) (sqrtf(SQ(x) + SQ(y)))  // Two-norm of 2D vector
+/* 数学运算宏 */
+#define SIGN(x) (((x) < 0.0f) ? -1.0f : 1.0f) /* 取符号，负数为 -1，其余为 1 */
+#define NORM2_f(x, y) (sqrtf(SQ(x) + SQ(y)))  /* 二维向量的长度 */
 
-// Check for NaN and infinity in floats
+/* 判断浮点数是否为无穷大或非数 */
 #define UTILS_IS_INF(x) ((x) == (1.0f / 0.0f) || (x) == (-1.0f / 0.0f))
 #define UTILS_IS_NAN(x) ((x) != (x))
 #define UTILS_NAN_ZERO(x) (x = UTILS_IS_NAN(x) ? 0.0f : x)
@@ -78,8 +78,8 @@ typedef __I uint8_t vcu8;
 #define ABS(x) ((x) > 0 ? (x) : -(x))
 // #define MAX(x, y)     (((x) > (y)) ? (x) : (y))
 // #define MIN(x, y)     (((x) < (y)) ? (x) : (y))
-#define min(x, y) (((x) < (y)) ? (x) : (y)) // Get minimum value
-#define max(x, y) (((x) > (y)) ? (x) : (y)) // Get maximum value
+#define min(x, y) (((x) < (y)) ? (x) : (y)) /* 取较小值 */
+#define max(x, y) (((x) > (y)) ? (x) : (y)) /* 取较大值 */
 #define CLAMP(x, lower, upper) (MIN(upper, MAX(x, lower)))
 #define FLOAT_EQU(floatA, floatB) ((ABS((floatA) - (floatB))) < 0.000001f)
 
@@ -90,7 +90,7 @@ typedef __I uint8_t vcu8;
   theta = (theta > M_2PI) ? theta - M_2PI : theta;                             \
   theta = (theta < 0.0f) ? theta + M_2PI : theta;
 
-// Mathematical constants
+/* 数学常量 */
 /* ⚠️ 注意 M_PI / M_2_PI 这两个名字 math.h 里也有, 含义还不一样:
  *      math.h:  M_PI   = π     = 3.14159265358979 (double)
  *               M_2_PI = 2/π   = 0.63661977236758  <-- 是 2/π, 不是 2π !
@@ -106,16 +106,16 @@ typedef __I uint8_t vcu8;
 #ifdef M_2_PI
 #undef M_2_PI
 #endif
-#define M_PI (3.14159265358f)         // Pi
-#define M_2PI (6.28318530716f)        // 2 * Pi
-#define M_2_PI (6.28318530716f)        // 2 * Pi  (⚠️ 覆盖了 math.h 的 2/π)
-#define div_M_2PI (0.159154943092391467f)        // 1/(2 * Pi)
-#define SQRT3 (1.73205080757f)        // Square root of 3
-#define SQRT3_BY_2 (0.86602540378f)   // Square root of 3 divided by 2
-#define ONE_BY_SQRT3 (0.57735026919f) // 1 divided by square root of 3
-#define TWO_BY_SQRT3 (1.15470053838f) // 2 divided by square root of 3
+#define M_PI (3.14159265358f)         /* 圆周率 */
+#define M_2PI (6.28318530716f)        /* 2π */
+#define M_2_PI (6.28318530716f)        /* 2π。注意：标准库里同名宏是 2/π */
+#define div_M_2PI (0.159154943092391467f)        /* 1/(2π) */
+#define SQRT3 (1.73205080757f)        /* 根号 3 */
+#define SQRT3_BY_2 (0.86602540378f)   /* 根号 3 的一半 */
+#define ONE_BY_SQRT3 (0.57735026919f) /* 1 除以根号 3 */
+#define TWO_BY_SQRT3 (1.15470053838f) /* 2 除以根号 3 */
 
-// Bit manipulation macros
+/* 位操作宏 */
 #define setbit(x, y) x |= (1 << y)
 #define clrbit(x, y) x &= ~(1 << y)
 #define reversebit(x, y) x ^= (1 << y)
@@ -138,7 +138,7 @@ typedef enum {
     ACB_PHASE = 1,      // A-C-B
 } phase_order_e;
 
-// Low-pass filter structure
+/* 低通滤波器 */
 typedef struct
 {
     float val;
@@ -149,7 +149,7 @@ typedef struct
     float filt_b;
 } lpf_t;
 
-// PID parameter structure
+/* 比例积分微分参数 */
 typedef struct
 {
     volatile float kp; // Proportional gain
@@ -180,7 +180,7 @@ typedef struct
     volatile float out_value;
 } pid_para_t;
 
-// PLL parameter structure
+/* 锁相环参数 */
 typedef struct
 {
     float kp;
@@ -219,7 +219,7 @@ typedef enum
 
 } foc_mode_e;
 
-// FOC parameter structure
+/* 磁场定向控制参数 */
 typedef struct
 {
 	foc_mode_e mode;
@@ -307,7 +307,7 @@ typedef struct
     float dtc_c;
 } pmsm_foc_t;
 
-// Power management state enumeration
+/* 运行状态 */
 typedef enum
 {
     reset = 0,
@@ -433,7 +433,7 @@ typedef enum {
 } motor_polarity_e;
 
 
-// PMSM parameter structure
+/* 永磁同步电机参数 */
 typedef struct
 {
     float rated_voltage;   // 额定电压
@@ -475,7 +475,7 @@ typedef struct
     float div_pn; // 1/pn
 } pmsm_para_t;
 
-// PMSM control structure
+/* 永磁同步电机控制量 */
 typedef struct
 {
     float drag_pe;    // Drag electrical position
@@ -609,7 +609,7 @@ typedef struct
     float i_q;
 } pmsm_display_t;
 
-// Period structure
+/* 控制周期 */
 typedef struct
 {
     uint32_t start_cnt;
@@ -646,7 +646,7 @@ typedef struct
     uint8_t spd_mea_cnt_val;
 } period_t;
 
-// ADC value structure for PMSM
+/* 采样值 */
 typedef struct
 {
     uint16_t ia;
@@ -670,7 +670,7 @@ typedef struct
 
 } pmsm_adc_val_t;
 
-// Board parameter structure for PMSM
+/* 驱动板参数 */
 typedef struct
 {
     float v_ref;
@@ -701,7 +701,7 @@ typedef struct
     float dead_time;
 } pmsm_board_t;
 
-// Fault status structure for PMSM
+/* 故障状态 */
 typedef union
 {
     struct
@@ -747,7 +747,7 @@ typedef union
     uint32_t all;
 } pmsm_flag_t;
 
-// Protection parameter structure
+/* 保护参数 */
 typedef struct
 {
     uint8_t rst;
@@ -786,7 +786,7 @@ typedef struct
 } protect_t;
 
 
-// Encoder parameter structure
+/* 编码器参数 */
 typedef struct
 {
     int dir;
@@ -805,7 +805,7 @@ typedef struct
 
 } enc_para_t;
 
-// Calibration state enumeration
+/* 校准状态 */
 typedef enum
 {
     cali_pp_start,
@@ -819,7 +819,7 @@ typedef enum
     cali_lut_end
 } cali_state_e;
 
-// Calibration structure
+/* 校准数据 */
 typedef struct
 {
     cali_state_e state;
@@ -899,7 +899,7 @@ typedef struct
     uint16_t result;
 } mod_enc_t;
 
-// Identification state enumeration
+/* 参数辨识总状态 */
 typedef enum
 {
     id_Rs,
@@ -913,7 +913,7 @@ typedef enum
     id_end
 } id_state_e;
 
-// Identification state enumeration for Rs
+/* 电阻辨识状态 */
 typedef enum
 {
     id_Rs_init,
@@ -924,7 +924,7 @@ typedef enum
     id_Rs_end,
 } id_Rs_state_e;
 
-// Identification state enumeration for Ls
+/* 电感辨识状态 */
 typedef enum
 {
     id_Ls_init,
@@ -934,7 +934,7 @@ typedef enum
     id_Ls_end,
 } id_Ls_state_e;
 
-// Identification state enumeration for Flux
+/* 磁链辨识状态 */
 typedef enum
 {
     id_Fs_init,
@@ -946,7 +946,7 @@ typedef enum
     id_Fs_end,
 } id_Fs_state_e;
 
-// Identification state enumeration for Js
+/* 转动惯量辨识状态 */
 typedef enum
 {
     id_Js_init,
@@ -955,7 +955,7 @@ typedef enum
     id_Js_end
 } id_Js_state_e;
 
-// Identification state enumeration for Rs
+/* 电阻辨识状态 */
 typedef enum {
     id_RL_init,
 	id_RL_align,
@@ -972,7 +972,7 @@ typedef enum
 	id_JB_end
 } id_JB_state_e;
 
-// Identification state enumeration for Flux
+/* 磁链辨识状态 */
 typedef enum
 {
     id_Fx_init,
@@ -980,7 +980,7 @@ typedef enum
     id_Fx_end,
 } id_Fx_state_e;
 
-// Parameter identification structure
+/* 参数辨识数据 */
 typedef struct
 {
     id_state_e id_state;
@@ -1018,14 +1018,14 @@ typedef struct
     float fs;
     float tc;
 
-    // Identification Rs
+    /* 电阻辨识 */
     uint8_t steps;
     uint8_t hstep;
     uint8_t samps;
     float is_max;
     float is_thre;
     float vs_step;
-    // Identification Ls
+    /* 电感辨识 */
     uint32_t L_cycle;
     uint8_t Lcnt;
     float Lts;
@@ -1037,7 +1037,7 @@ typedef struct
     float Ld_minu;
     float Lq_plus;
     float Lq_minu;
-    // Identification Flux
+    /* 磁链辨识 */
     float fiq_ref;
     float we_l;
     float we_h;
@@ -1050,7 +1050,7 @@ typedef struct
     float vs_h;
     float is_l;
     float is_h;
-    // Identification Js
+    /* 转动惯量辨识 */
     float Jvq_ref;
     float Jiq_ref;
     float Jiq_max;
@@ -1062,7 +1062,7 @@ typedef struct
     float lambda;
     float Js_init;
 
-    // Identification RL
+    /* 电阻电感联合辨识 */
     float vd_max;
     float id_min;
     float id_max;
@@ -1071,11 +1071,11 @@ typedef struct
     float RL_fs;
     float RL_time;      // Time for Res and Ls identification
     float R_est;
-    // Identification Fx
+    /* 磁链扩展辨识 */
     float fkp;
     float wr_set;
     float fx_time;
-    // Identification JB
+    /* 惯量与阻尼辨识 */
     float Tem;
     float JB_iq_ref;
     float JB_iq_max;
@@ -1094,7 +1094,7 @@ typedef struct
 
 } idpm_t;
 
-// Nonlinear observer structure
+/* 非线性观测器 */
 typedef struct
 {
     float* i_alph; // Current in alpha-beta coordinates
@@ -1141,7 +1141,7 @@ typedef struct
     pll_t pll;
 } nlob_t;
 
-// Adaptive linear observer structure
+/* 自适应线性观测器 */
 typedef struct
 {
     float* i_alph; // Current in alpha-beta coordinates
@@ -1192,7 +1192,7 @@ typedef struct
     pll_t pll;
 } alob_t;
 
-// Sliding mode observer structure
+/* 滑模观测器 */
 typedef struct
 {
     float* i_alph; // Current in alpha-beta coordinates
@@ -1229,7 +1229,7 @@ typedef struct
     float pos_e; // Rotor angle
 } scvm_t;
 
-// High-frequency signal injection structure
+/* 高频注入 */
 typedef struct
 {
     float iv_fs;
@@ -1301,7 +1301,7 @@ typedef struct
     float fs;
 } esmo_t;
 
-// Initial position detection structure
+/* 初始位置检测 */
 typedef struct
 {
     u8 mode;
@@ -1412,7 +1412,7 @@ typedef struct
     float aco_table[1];
 } pmsm_map_t;
 
-// PMSM structure
+/* 永磁同步电机总结构体 */
 typedef struct
 {
     mode_ctrl_e  mode;
@@ -1472,7 +1472,7 @@ extern eh_tobs_t eh_tobs;
 
 void temp_calc(void);
 
-/* Utility functions */
+/* 工具函数 */
 float sat1_datf(float val, float up, float low);
 float fast_atan2(float y, float x);
 void low_pf_init(lpf_t* x);
@@ -1495,7 +1495,7 @@ uint16_t data_to_uint16(uint8_t* data);
 int16_t data_to_int16(uint8_t* data);
 float data_to_float(uint8_t* data);
 
-/* PID functions */
+/* 比例积分微分函数 */
 void pid_para_init(pid_para_t* pid_config);
 void pid_limit_init(pid_para_t* pid_config, float i_term_max, float i_term_min, float out_max, float out_min);
 void pid_clear(pid_para_t* pid_clear);
@@ -1505,11 +1505,11 @@ float serial_pid_ctrl(pid_para_t* pid, float ref_value, float fdback_value);
 float serial_pid_ctrl1(pid_para_t* pid, float ref_value, float fdback_value, float i_max, float out_max);
 float pdff_ctrl(pid_para_t *pid, float ref_value, float fdback_value);
 
-/* PLL functions */
+/* 锁相环函数 */
 void pll_calc(pll_t* pll, float pos);
 void ort_pll_calc(pll_t* pll, float alpha, float beta, float gain);
 
-/* FOC calculation functions */
+/* 磁场定向控制的坐标变换 */
 void foc_calc(pmsm_foc_t * foc);
 void sin_cos_val(pmsm_foc_t* foc);
 void clarke_transform(pmsm_foc_t* foc);
@@ -1521,7 +1521,7 @@ void svpwm_sector(pmsm_foc_t* foc);
 int svpwm(pmsm_foc_t* foc);
 int svm(float alpha, float beta, float* ta, float* tb, float* tc);
 
-/* FOC drive functions */
+/* 驱动与采样 */
 void pmsm_init(void);
 void pmsm_peroid_init(void);
 void pmsm_protect_init(void);
@@ -1544,7 +1544,7 @@ void foc_curr(pmsm_t* pm, float id_set, float iq_set, float pos);
 void foc_vel(pmsm_t* pm, float vel_set, float iq_set, float pos);
 void foc_pos(pmsm_t* pm, float pos_set, float vel_set, float iq_set, float pos);
 
-/* FOC control functions */
+/* 状态机与故障处理 */
 void pmsm_state_ctrl(pmsm_t* pm);
 void pmsm_mode_ctrl(pmsm_t* pm);
 void pmsm_observe(pmsm_t* pm);
@@ -1589,7 +1589,7 @@ void csp_pos_mode(pmsm_t* pm);
 void pmsm_quick_stop_mode(pmsm_t* pm);
 void pmsm_fault_stop_mode(pmsm_t* pm);
 
-/* Encoder functions */
+/* 编码器 */
 void encoder_init(void);
 uint32_t read_mt6825_raw(void);
 uint32_t read_mt6816_raw(void);
@@ -1605,7 +1605,7 @@ void sensory2_pos_calc(pmsm_t* pm);
 void senless_pos_calc(pmsm_t* pm);
 float spd_measure(float pos, float fs, float filt_bw);
 
-/* PMSM identification functions */
+/* 电机参数辨识 */
 void iden_init(void);
 void iden_pmsm_first(idpm_t *x);
 void iden_Rs(idpm_t *x);
@@ -1625,7 +1625,7 @@ void iden_Fx_reset(idpm_t *x);
 void iden_JB(idpm_t *x);
 void iden_JB_reset(idpm_t *x);
 
-/* Calibration functions */
+/* 校准 */
 void cali_init(void);
 void cali_mag_encoder(pmsm_t *pm);
 void cali_reset_state(cali_t *x);
@@ -1634,29 +1634,29 @@ void modulation_encoder(pmsm_t *pm);
 void anticog_init(void);
 void anticogging_calibration(pmsm_t *pm);
 
-/* Nonlinear observer functions */
+/* 非线性观测器 */
 void nlob_init(void);
 void nlob_vesc(nlob_t* obj);
 
-/* Adaptive linear observer functions */
+/* 自适应线性观测器 */
 void alob_init(void);
 void alob_flux(alob_t* obj);
 void alob_curr(alob_t* obj);
 
-/* Execute the static compensation voltage functions */
+/* 静态补偿电压 */
 void scvm_init(void);
 void scvm_obe(scvm_t* obj);
 
-/* High-frequency signal injection functions */
+/* 高频信号注入 */
 void hfsi_init(void);
 void hfsi_input(void);
 
-/* E smo */
+/* 扩展滑模观测器 */
 void esmo_init(void);
 void esmo_obe(esmo_t* x);
 
 
-/* Initial position detection functions */
+/* 初始位置检测 */
 void ipd_pos_run(ipd_t* obj, float* vd);
 
 void traj_init(void);

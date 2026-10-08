@@ -88,6 +88,14 @@ static void ntc_sample(ntc_t *n, uint16_t adc,
     n->over = (n->temp >= fault_th) ? 1u : 0u;
 }
 
+/**
+***********************************************************************
+* @brief:      ntc_init(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    清 MOS 和绕组两路 NTC 的温度、有效标志和过温标志
+***********************************************************************
+**/
 void ntc_init(void)
 {
     ntc_mos.valid  = 0u;
@@ -99,6 +107,14 @@ void ntc_init(void)
     ntc_coil.temp  = 0.0f;
 }
 
+/**
+***********************************************************************
+* @brief:      ntc_update(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    采样两路 NTC，换算温度并写回 pm.foc。过温只置故障位，不停 PWM
+***********************************************************************
+**/
 void ntc_update(void)
 {
     /* NTC1 板载测 MOS: PB1 -> ADC1_IN12 -> adc1_buff[1] */

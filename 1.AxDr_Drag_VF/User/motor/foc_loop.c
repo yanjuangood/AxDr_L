@@ -645,7 +645,14 @@ volatile float   calib_e_off   = 0.0f;  /* 最终采用的 e_off */
 static float calib_t       = 0.0f;
 static float calib_rad_beg = 0.0f;
 
-/* 归一化到 [0, 2*pi) */
+/**
+***********************************************************************
+* @brief:      calib_wrap(float x)
+* @param[in]:  x  任意弧度
+* @retval:     归一化到 [0, 2pi) 的角度
+* @details:    电角度零点标定用，避免累加后跑出 0~2pi
+***********************************************************************
+**/
 static float calib_wrap(float x)
 {
     while (x < 0.0f)   { x += M_2PI; }

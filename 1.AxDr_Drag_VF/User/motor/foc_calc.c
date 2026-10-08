@@ -3,9 +3,9 @@
 /**
 ***********************************************************************
 * @brief:      foc_calc(pmsm_foc_t *foc)
-* @param[in]:  foc  Pointer to FOC parameter structure
+* @param[in]:  foc  指向磁场定向控制参数结构体的指针
 * @retval:     void
-* @details:    FOC algorithm: coordinate transformation and voltage calculation
+* @details:    一次完整计算：正余弦、克拉克、帕克、逆帕克，再做空间矢量调制
 ***********************************************************************
 **/
 _RAM_FUNC void foc_calc(pmsm_foc_t *foc)
@@ -92,6 +92,14 @@ _RAM_FUNC void inverse_park(pmsm_foc_t *foc)
     foc->v_beta = (foc->v_d *foc->sin_val + foc->v_q *foc->cos_val);
 }
 
+/**
+***********************************************************************
+* @brief:      svpwm_midpoint(pmsm_foc_t *foc)
+* @param[in]:  foc  指向 FOC 参数结构体的指针
+* @retval:     void
+* @details:    中点钳位空间矢量调制。用共模电压把三相占空比收进 0 到 1
+***********************************************************************
+**/
 _RAM_FUNC void svpwm_midpoint(pmsm_foc_t *foc)
 {
     foc->v_alph = foc->inv_vbus *foc->v_alph;
@@ -107,6 +115,14 @@ _RAM_FUNC void svpwm_midpoint(pmsm_foc_t *foc)
     foc->dtc_c = 1.0f-((vc - vcom) + 0.5f);
 }
 
+/**
+***********************************************************************
+* @brief:      svpwm_sector(pmsm_foc_t *foc)
+* @param[in]:  foc  指向 FOC 参数结构体的指针
+* @retval:     void
+* @details:    扇区法空间矢量调制。按两相静止坐标所在扇区计算矢量作用时间，再写成占空比
+***********************************************************************
+**/
 _RAM_FUNC void svpwm_sector(pmsm_foc_t *foc)
 {
     float TS = 1.0f;
@@ -224,6 +240,16 @@ _RAM_FUNC void svpwm_sector(pmsm_foc_t *foc)
  *   而且闭环的另一半 (电流采样极性) 因为 U14 没焊, 现在根本测不了。
  *   等 U14 焊上、能测电流了, 再一次性把整条链的符号对清楚。
  * =========================================================================== */
+/**
+***********************************************************************
+* @brief:      svm(float alpha, float beta, float *ta, float *tb, float *tc)
+* @param[in]:  alpha  标幺后的 α 轴电压
+* @param[in]:  beta   标幺后的 β 轴电压
+* @param[out]: ta/tb/tc  三相占空比
+* @retval:     0 占空比都在 0 到 1；-1 越界或出现非数，调用方应保持上一拍输出
+* @details:    六扇区空间矢量调制。符号约定见上面的说明，输出矢量与请求值相反
+***********************************************************************
+**/
 int svm(float alpha, float beta, float *ta, float *tb, float *tc)
 {
     int Sextant;
@@ -232,26 +258,26 @@ int svm(float alpha, float beta, float *ta, float *tb, float *tc)
     {
         if (alpha >= 0.0f)
         {
-            //quadrant I
+            /* 第一象限 */
             if (ONE_BY_SQRT3 *beta > alpha)
             {
-                Sextant = 2;    //sextant v2-v3
+                Sextant = 2;    /* 扇区 2，矢量 V2-V3 */
             }
             else
             {
-                Sextant = 1;    //sextant v1-v2
+                Sextant = 1;    /* 扇区 1，矢量 V1-V2 */
             }
         }
         else
         {
-            //quadrant II
+            /* 第二象限 */
             if (-ONE_BY_SQRT3 *beta > alpha)
             {
-                Sextant = 3;    //sextant v3-v4
+                Sextant = 3;    /* 扇区 3，矢量 V3-V4 */
             }
             else
             {
-                Sextant = 2;    //sextant v2-v3
+                Sextant = 2;    /* 扇区 2，矢量 V2-V3 */
             }
         }
     }
@@ -259,104 +285,104 @@ int svm(float alpha, float beta, float *ta, float *tb, float *tc)
     {
         if (alpha >= 0.0f)
         {
-            //quadrant IV
+            /* 第四象限 */
             if (-ONE_BY_SQRT3 *beta > alpha)
             {
-                Sextant = 5;    //sextant v5-v6
+                Sextant = 5;    /* 扇区 5，矢量 V5-V6 */
             }
             else
             {
-                Sextant = 6;    //sextant v6-v1
+                Sextant = 6;    /* 扇区 6，矢量 V6-V1 */
             }
         }
         else
         {
-            //quadrant III
+            /* 第三象限 */
             if (ONE_BY_SQRT3 *beta > alpha)
             {
-                Sextant = 4;    //sextant v4-v5
+                Sextant = 4;    /* 扇区 4，矢量 V4-V5 */
             }
             else
             {
-                Sextant = 5;    //sextant v5-v6
+                Sextant = 5;    /* 扇区 5，矢量 V5-V6 */
             }
         }
     }
 
     switch (Sextant)
     {
-    // sextant v1-v2
+    /* 扇区 1，矢量 V1 到 V2 */
     case 1:
     {
-        // Vector on-times
+        /* 相邻两个基本矢量的作用时间 */
         float t1 = alpha - ONE_BY_SQRT3 *beta;
         float t2 = TWO_BY_SQRT3 *beta;
-        // PWM timings
+        /* 换算成三相开通时刻 */
         tA = (1.0f - t1 - t2) * 0.5f;
         tB = tA + t1;
         tC = tB + t2;
     }
     break;
 
-    // sextant v2-v3
+    /* 扇区 2，矢量 V2 到 V3 */
     case 2:
     {
-        // Vector on-times
+        /* 相邻两个基本矢量的作用时间 */
         float t2 = alpha + ONE_BY_SQRT3 *beta;
         float t3 = -alpha + ONE_BY_SQRT3 *beta;
-        // PWM timings
+        /* 换算成三相开通时刻 */
         tB = (1.0f - t2 - t3) * 0.5f;
         tA = tB + t3;
         tC = tA + t2;
     }
     break;
 
-    // sextant v3-v4
+    /* 扇区 3，矢量 V3 到 V4 */
     case 3:
     {
-        // Vector on-times
+        /* 相邻两个基本矢量的作用时间 */
         float t3 = TWO_BY_SQRT3 *beta;
         float t4 = -alpha - ONE_BY_SQRT3 *beta;
-        // PWM timings
+        /* 换算成三相开通时刻 */
         tB = (1.0f - t3 - t4) * 0.5f;
         tC = tB + t3;
         tA = tC + t4;
     }
     break;
 
-    // sextant v4-v5
+    /* 扇区 4，矢量 V4 到 V5 */
     case 4:
     {
-        // Vector on-times
+        /* 相邻两个基本矢量的作用时间 */
         float t4 = -alpha + ONE_BY_SQRT3 *beta;
         float t5 = -TWO_BY_SQRT3 *beta;
-        // PWM timings
+        /* 换算成三相开通时刻 */
         tC = (1.0f - t4 - t5) * 0.5f;
         tB = tC + t5;
         tA = tB + t4;
     }
     break;
 
-    // sextant v5-v6
+    /* 扇区 5，矢量 V5 到 V6 */
     case 5:
     {
-        // Vector on-times
+        /* 相邻两个基本矢量的作用时间 */
         float t5 = -alpha - ONE_BY_SQRT3 *beta;
         float t6 = alpha - ONE_BY_SQRT3 *beta;
-        // PWM timings
+        /* 换算成三相开通时刻 */
         tC = (1.0f - t5 - t6) * 0.5f;
         tA = tC + t5;
         tB = tA + t6;
     }
     break;
 
-    // sextant v6-v1
+    /* 扇区 6，矢量 V6 到 V1 */
     case 6:
     {
-        // Vector on-times
+        /* 相邻两个基本矢量的作用时间 */
         float t6 = -TWO_BY_SQRT3 *beta;
         float t1 = alpha + ONE_BY_SQRT3 *beta;
-        // PWM timings
+        /* 换算成三相开通时刻 */
         tA = (1.0f - t6 - t1) * 0.5f;
         tC = tA + t1;
         tB = tC + t6;
@@ -369,7 +395,7 @@ int svm(float alpha, float beta, float *ta, float *tb, float *tc)
     *tc = tC;
 
     int result_valid = *ta >= 0.0f && *ta <= 1.0f && *tb >= 0.0f && *tb <= 1.0f && *tc >= 0.0f && *tc <= 1.0f;
-    // if any of the results becomes NaN, result_valid will evaluate to false
+    /* 任一结果变成非数时，下面的比较结果为假 */
    
     return result_valid ? 0 : -1;
 }
