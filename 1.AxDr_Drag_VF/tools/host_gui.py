@@ -263,6 +263,7 @@ class App:
         # 不能按缓冲区长度自动缩放 —— 那样刚开时只画 1 秒 (线很稀),
         # 后来画满 20 秒 (2000 个点挤在同样宽度里), 看起来就是"越来越密"。
         self.plot_window = 5.0
+        self._live = {}          # 顶部控制栏的实时读数缓存
 
         self._build_ui(port)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -272,6 +273,98 @@ class App:
     def _on_close(self):
         self.close()
         self.root.destroy()
+
+    # ---------------- 运行控制面板 ----------------
+    def _build_runbar(self):
+        """常用的控制集中在一块, 不用去参数表里翻数字填。
+
+        模式编号来自 common.h 的 foc_mode_e:
+            0 = V/f (电压开环)   1 = 电流   2 = 速度   3 = 位置"""
+        bar = ttk.LabelFrame(self.root, text='运行控制')
+        bar.pack(fill='x', padx=6, pady=(0, 4))
+
+        line1 = ttk.Frame(bar)
+        line1.pack(fill='x', padx=6, pady=(4, 2))
+
+        ttk.Label(line1, text='模式:').pack(side='left')
+        self.mode_var = tk.IntVar(value=2)
+        for txt, val in [('V/f 电压', 0), ('电流', 1), ('速度', 2), ('位置', 3)]:
+            ttk.Radiobutton(line1, text=txt, value=val, variable=self.mode_var,
+                            command=self._on_mode).pack(side='left', padx=2)
+
+        ttk.Separator(line1, orient='vertical').pack(side='left', fill='y', padx=8)
+
+        self.btn_run = ttk.Button(line1, text='▶ 运行', command=self._on_run)
+        self.btn_run.pack(side='left', padx=2)
+        ttk.Button(line1, text='■ 停止', command=self._on_stop).pack(side='left', padx=2)
+
+        # 实时读数
+        self.lbl_live = ttk.Label(line1, text='', foreground='#06c')
+        self.lbl_live.pack(side='left', padx=16)
+
+        # ---- 第二行: 速度给定 ----
+        line2 = ttk.Frame(bar)
+        line2.pack(fill='x', padx=6, pady=(0, 6))
+
+        ttk.Label(line2, text='速度给定:').pack(side='left')
+
+        self.spd_var = tk.DoubleVar(value=0.0)
+        self.spd_scale = ttk.Scale(line2, from_=-50.0, to=50.0,
+                                   variable=self.spd_var, orient='horizontal',
+                                   length=380, command=self._on_slide)
+        self.spd_scale.pack(side='left', padx=6)
+
+        ttk.Label(line2, text='rad/s').pack(side='left')
+
+        self.spd_entry = ttk.Entry(line2, textvariable=self.spd_var, width=8)
+        self.spd_entry.pack(side='left', padx=6)
+        self.spd_entry.bind('<Return>', lambda _e: self._apply_speed())
+
+        ttk.Button(line2, text='应用', command=self._apply_speed).pack(side='left', padx=2)
+
+        self.lbl_spd = ttk.Label(line2, text='0.0 rad/s (0 rpm)', foreground='#080')
+        self.lbl_spd.pack(side='left', padx=10)
+
+        # 滑块拖动时不要每像素都发命令, 做个节流
+        self._slide_last = 0.0
+        self._slide_t = 0.0
+
+        ttk.Label(bar, text='提示: 先选「速度」模式并「运行」, 再拖速度条。'
+                            '转速单位 rad/s, 10 rad/s ≈ 95 rpm',
+                  foreground='#888').pack(anchor='w', padx=8, pady=(0, 4))
+
+    def _on_mode(self):
+        m = self.mode_var.get()
+        self.send('mode %d' % m)
+        # 切到速度模式时顺手把当前滑块值下发, 免得还要再点一次
+        if m == 2:
+            self.root.after(150, self._apply_speed)
+
+    def _on_run(self):
+        """运行 = 先下发一次速度给定 (会自动重新使能输出), 再 START"""
+        self.send('mode %d' % self.mode_var.get())
+        self.send('spd %.3f' % self.spd_var.get())
+        self.root.after(120, lambda: self.send('START'))
+
+    def _on_stop(self):
+        self.send('spd 0')
+        self.root.after(80, lambda: self.send('STOP'))
+
+    def _on_slide(self, _val):
+        """滑块滑动中: 节流下发, 让电机跟着动, 但不要刷爆串口"""
+        now = time.time()
+        v = self.spd_var.get()
+        if abs(v - self._slide_last) < 0.4 and (now - self._slide_t) < 0.15:
+            return
+        self._slide_last = v
+        self._slide_t = now
+        self.lbl_spd.config(text='%.1f rad/s (%.0f rpm)' % (v, v * 60.0 / (2 * 3.141592653589793)))
+        self.send('spd %.3f' % v)
+
+    def _apply_speed(self):
+        v = self.spd_var.get()
+        self.lbl_spd.config(text='%.1f rad/s (%.0f rpm)' % (v, v * 60.0 / (2 * 3.141592653589793)))
+        self.send('spd %.3f' % v)
 
     # ---------------- UI ----------------
     def _build_ui(self, port):
@@ -289,11 +382,12 @@ class App:
         self.status = ttk.Label(top, text='未连接', foreground='#c00')
         self.status.pack(side='left', padx=10)
 
-        for txt, cmd in [('START', 'START'), ('STOP', 'STOP'),
-                         ('清故障', 'RST'), ('标定 e_off', 'CAL'),
+        for txt, cmd in [('清故障', 'RST'), ('标定 e_off', 'CAL'),
                          ('回读全部', 'GET?')]:
             ttk.Button(top, text=txt,
                        command=lambda c=cmd: self.send(c)).pack(side='left', padx=2)
+
+        self._build_runbar()
 
         # ===== 中部左: 参数表 =====
         mid = ttk.Frame(self.root)
@@ -454,9 +548,6 @@ class App:
             row = self.params.get(name)
             if row is not None:
                 row.refresh(val.strip())
-            if name not in ('vbus', 'ia', 'ib', 'ic', 'id_mea', 'iq_mea',
-                            'wr', 'pe', 'fault', 'ctrl'):
-                pass
             return
 
         self._log('<< %s' % line)
@@ -503,6 +594,12 @@ class App:
                     self.frames.pop(0)
             if n:
                 self._draw_plot()
+                # 顶部实时读数直接取遥测流的最新一帧 (60~100Hz),
+                # 比走 GET? (3 秒一次) 快得多
+                fr = self.frames[-1][1]
+                self.lbl_live.config(
+                    text='实测 %7.2f rad/s   iq %+6.3f A   母线 %5.2f V   故障 %d'
+                         % (fr[12], fr[9], fr[2], int(fr[4])))
         self.root.after(50, self._tick_plot)
 
     def close(self):
