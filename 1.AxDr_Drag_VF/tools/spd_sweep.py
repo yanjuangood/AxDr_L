@@ -97,6 +97,8 @@ def trial(L, kp, ki, target, secs=5.0):
     tail = fs[len(fs) // 2:]
     wr = [f[C_WR] for f in tail]
     iq = [f[C_IQSET] for f in tail]
+    iqm = [f[C_IQ] for f in fs]
+    flt = [f[C_FAULT] for f in fs]
     av = sum(wr) / len(wr)
     pk = max(wr) - min(wr)
     # 上升时间: 第一次达到给定 90% 的时刻
@@ -106,17 +108,17 @@ def trial(L, kp, ki, target, secs=5.0):
             rise = k / (len(fs) / secs)
             break
     return dict(avg=av, err=av - target, ripple=pk,
-                iq=sum(iq) / len(iq), iqmax=max(iq), rise=rise)
+                iq=sum(iq) / len(iq), iqmax=max(iq), rise=rise,
+                iq_mea_max=max(iqm), fault=max(flt))
 
 
 def main():
     target = float(sys.argv[1]) if len(sys.argv) > 1 else 10.0
     cases = [
         (0.0,      0.0,      '模型整定 (kp=wc*Js=0.0063)'),
-        (0.02,     0.001,    'kp=0.02  ki=0.001'),
-        (0.05,     0.002,    'kp=0.05  ki=0.002'),
-        (0.10,     0.005,    'kp=0.10  ki=0.005'),
-        (0.20,     0.010,    'kp=0.20  ki=0.010'),
+        (0.010,    0.0005,   'kp=0.010 ki=0.0005  (1.6x)'),
+        (0.020,    0.001,    'kp=0.020 ki=0.001   (3.2x)'),
+        (0.040,    0.002,    'kp=0.040 ki=0.002   (6.3x)'),
     ]
 
     L = Link()
@@ -125,9 +127,9 @@ def main():
 
     print('速度环增益扫描, 给定 %.1f rad/s' % target)
     print()
-    print('%-26s %9s %9s %9s %9s %8s' %
-          ('kp / ki', '稳态', '误差', '峰峰', 'iq均值', '上升'))
-    print('-' * 82)
+    print('%-26s %9s %9s %9s %9s %8s %7s %7s' %
+          ('kp / ki', '稳态', '误差', '峰峰', 'iq均值', '上升', 'iq峰值', '故障'))
+    print('-' * 100)
 
     results = []
     for kp, ki, name in cases:
@@ -136,8 +138,9 @@ def main():
             print('%-26s   数据不足' % name)
             continue
         rs = '%.2fs' % r['rise'] if r['rise'] is not None else '  n/a'
-        print('%-26s %9.3f %9.3f %9.3f %9.4f %8s'
-              % (name, r['avg'], r['err'], r['ripple'], r['iq'], rs))
+        print('%-26s %9.3f %9.3f %9.3f %9.4f %8s %7.3f %7d'
+              % (name, r['avg'], r['err'], r['ripple'], r['iq'], rs,
+                 r['iq_mea_max'], int(r['fault'])))
         results.append((name, r))
 
     # 恢复默认

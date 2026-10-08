@@ -40,8 +40,11 @@ volatile uint8_t enc_volt_en = 0u;
 
 /* ---- 转速测量 (spd_measure_update) ---- */
 #define SPD_TS              0.01f   /* 主循环周期, 和 main.c 的 HAL_Delay(10) 对应 */
+/* 测速滑动窗口长度 (主循环周期数)。80ms 是为了跨过多个齿槽周期,
+ * 把 107Hz 齿槽混叠出来的假信号平均掉。详见 spd_measure_update() 的说明 */
+#define SPD_AVG_N           8u
 /* 一阶低通系数。a = dt/(dt+tau), tau = 1/(2*pi*fc)。
- * 取 fc = 30Hz, dt = 10ms -> tau = 5.3ms -> a = 0.01/0.0153 = 0.65 */
+ * 窗口平均之后残留的噪声已经不多, 这里只做轻度平滑 */
 #define SPD_LPF_A           0.65f
 
 /**
@@ -71,15 +74,40 @@ volatile uint8_t enc_volt_en = 0u;
  *  ⚠️ 改这个值之后 e_off 必须重新标定 (CALIB_MODE / 上位机发 CAL),
  *     因为标定公式 e_off = CALIB_ANG - rad*pn 依赖于同一个方向约定。
  *     换方向时可以手算: e_off_new = CALIB_ANG + rad*pn */
+/* 编码器连续出错多少次才认定真坏了。
+ * 一次 SPI 被噪声打坏不算故障 —— 用上一帧角度顶过去就行。
+ * 100 次 @100Hz = 1 秒, 真是断线的话 1 秒内也会被发现。 */
+#define MT6701_ERR_MAX      100u
+
+static uint16_t s_enc_err_run = 0u;     /* 连续 CRC 失败计数 */
+
 void sensory_pos_calc(pmsm_t* pm)
 {
-    /* 编码器 CRC 不过 -> 角度不可信, 置故障停机。
-     * 拿着错角度继续跑电流环比不跑危险得多 */
+    /* 编码器 CRC 不过时, 这一帧的角度不可信 —— 保留上一帧的 p_e, 不更新。
+     *
+     * ⚠️ 但不能一帧不过就立刻闭锁故障:
+     *    MT6701 的 SPI 和功率级在同一块板上, 20kHz 开关噪声偶尔会打坏一帧。
+     *    实测跑速度环时就是偶发一帧 CRC 错 -> enc_err 闭锁 -> 电机直接停,
+     *    而且故障是闭锁的, 只能靠 RST 清 —— 表现成"跑着跑着突然不动, 故障 32"。
+     *
+     *    一帧错的角度确实不能用, 但只错一帧完全可以用上次的角度顶一下
+     *    (50us 的延迟对机械时间常数可以忽略)。 */
     if (mt6701.crc_ok == 0u)
     {
-        pm->fault.bit.enc_err = 1u;
+        if (s_enc_err_run < MT6701_ERR_MAX)
+        {
+            s_enc_err_run++;
+        }
+        if (s_enc_err_run >= MT6701_ERR_MAX)
+        {
+            pm->fault.bit.enc_err = 1u;
+        }
         return;
     }
+
+    /* 这一帧是好的: 清计数, 顺便解除之前的编码器故障 */
+    s_enc_err_run        = 0u;
+    pm->fault.bit.enc_err = 0u;
 
     /* 机械角 (rad, 0~2pi) * 极对数 + 电角度零点偏移 = 电角度
      * 用 mt6701.rad 而不是 total_rad: rad 被限制在 0~2pi, 浮点精度更好,
@@ -235,24 +263,41 @@ volatile float spd_wr_meas = 0.0f;
 **/
 void spd_measure_update(void)
 {
-    static float s_prev_rad = 0.0f;
-    static uint8_t s_first = 1u;
+    /* 滑动窗口: 存最近 SPD_AVG_N+1 个 total_rad, 用首尾差算平均速度。
+     *
+     * 为什么不能用单周期差分:
+     *   12N14P 的齿槽是 84 步/圈。8 rad/s 时齿槽频率 84*8/(2pi) = 107Hz,
+     *   而这里只有 100Hz 采样 —— 107Hz 会被混叠成一个低频假信号。
+     *   速度环把这个假信号当成真波动去纠正, 反而把真实的波动放大了
+     *   (实测转速峰峰值有 4 rad/s, 占给定的一半)。
+     *
+     *   80ms 窗口 = 8 个主循环周期, 在 8 rad/s 下跨过约 8.5 个齿槽周期,
+     *   齿槽被平均掉, 代价是多了约 40ms 滞后 —— 对十几 Hz 的速度环可以接受。
+     */
+    static float   s_hist[SPD_AVG_N + 1u];
+    static uint8_t s_idx = 0u;
+    static uint8_t s_cnt = 0u;
     float drad;
     float raw;
 
-    if (s_first != 0u)
+    s_hist[s_idx] = mt6701.total_rad;
+    s_idx = (uint8_t)((s_idx + 1u) % (SPD_AVG_N + 1u));
+
+    if (s_cnt <= SPD_AVG_N)
     {
-        s_prev_rad = mt6701.total_rad;
-        s_first    = 0u;
-        return;
+        s_cnt++;
+    }
+    if (s_cnt <= SPD_AVG_N)
+    {
+        return;             /* 还没攒满一个窗口 */
     }
 
-    drad       = mt6701.total_rad - s_prev_rad;
-    s_prev_rad = mt6701.total_rad;
+    /* s_hist[s_idx] 是最旧的一个, s_hist[(s_idx+SPD_AVG_N)%(N+1)] 是最新的 */
+    drad = s_hist[(uint8_t)((s_idx + SPD_AVG_N) % (SPD_AVG_N + 1u))] - s_hist[s_idx];
 
-    raw = drad / SPD_TS;
+    raw = drad / (SPD_AVG_N * SPD_TS);
 
-    /* 一阶低通: y += a * (x - y) */
+    /* 再轻量低通一次, 压掉窗口边界的跳变 */
     spd_wr_meas += SPD_LPF_A * (raw - spd_wr_meas);
 }
 
