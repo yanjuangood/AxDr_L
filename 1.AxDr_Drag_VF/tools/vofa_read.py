@@ -20,28 +20,32 @@ import struct
 import time
 
 PORT = r'\\.\COM12'
-NCH = 12
+NCH = 16
 TAIL = b'\x00\x00\x80\x7f'
 FRAME = NCH * 4 + 4
 
 # 和 main.c 里 vofa_send_data() 的顺序严格对应
 NAMES = [
     'angle(deg)',    # 0  机械角 0~360
-    'mg',            # 1  MT6701 磁场状态
-    'crc_ok',        # 2  CRC 通过计数
-    'spi_mode',      # 3  SPI 模式
-    'i_raw_peak',    # 4  相电流原始计数峰值
-    'total_rad',     # 5  累计机械角 (rad)
-    'T_mos(C)',      # 6  板载 NTC MOS 温度
-    'vq_set(V)',     # 7  q 轴电压给定, 0 = 没在驱动
-    'fault',         # 8  故障掩码, 0 = 正常
-    'vbus(V)',       # 9  母线电压
-    'raw_ia',        # 10 A 相原始 ADC 计数
-    'raw_ic',        # 11 C 相原始 ADC 计数
+    'total_rad',     # 1  累计机械角 (rad)
+    'vbus(V)',       # 2  母线电压
+    'vq_set(V)',     # 3  q 轴电压给定
+    'fault',         # 4  故障掩码, 0 = 正常
+    'ia(A)',         # 5  A 相电流
+    'ib(A)',         # 6  B 相电流
+    'ic(A)',         # 7  C 相电流
+    'id(A)',         # 8  d 轴电流实测
+    'iq(A)',         # 9  q 轴电流实测
+    'iq_set(A)',     # 10 q 轴电流给定
+    'id_set(A)',     # 11 d 轴电流给定
+    'wr(rad/s)',     # 12 实测机械角速度
+    'T_mos(C)',      # 13 板载 NTC MOS 温度
+    'i_peak(A)',     # 14 电流幅值峰值 (保持)
+    'crc_ok',        # 15 编码器 CRC 状态
 ]
 
 # 只看这几个就够日常用
-KEY = [0, 5, 7, 8, 9]
+KEY = [5, 6, 7, 9, 10, 12]
 
 
 def read_frames(seconds):

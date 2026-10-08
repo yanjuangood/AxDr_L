@@ -29,19 +29,20 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 # ======================= 协议常量 =======================
-NCH = 12
+NCH = 16
 TAIL = b'\x00\x00\x80\x7f'
 FRAME = NCH * 4 + 4
 BAUD = 115200          # USB CDC 用不到, 但留着以防有人接 USART
 
 # 和 main.c 的 vofa_send_data() 顺序严格对应
 CH_NAMES = [
-    '机械角(°)', 'mg', 'crc_ok', 'spi_mode',
-    'i_raw_peak', '累计角(rad)', 'MOS温度(°C)', 'vq_set(V)',
-    '故障掩码', '母线(V)', 'raw_ia', 'raw_ic',
+    '机械角(°)', '累计角(rad)', '母线(V)', 'vq给定(V)',
+    '故障掩码', 'ia(A)', 'ib(A)', 'ic(A)',
+    'id实测(A)', 'iq实测(A)', 'iq给定(A)', 'id给定(A)',
+    '转速(rad/s)', 'MOS温度(°C)', '电流峰值(A)', '编码器CRC',
 ]
 # 默认画这几条
-CH_DEFAULT = [0, 8, 9]
+CH_DEFAULT = [5, 6, 7, 9, 12]
 
 PLOT_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4',
                '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080',

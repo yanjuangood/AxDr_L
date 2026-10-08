@@ -352,41 +352,46 @@ int main(void)
     }
 #endif
 
-    vofa_send_data(0, mt6701.angle);
-    vofa_send_data(1, (float)mt6701.mg);
-    vofa_send_data(2, (float)mt6701.crc_ok);
-    vofa_send_data(3, (float)mt6701.spi_mode);
-    /* 峰值一直保持。开环结束、PWM 关掉之后，仍能看出刚才有没有电流灌进去。
-     * 空载大约 20。驱动起来应明显超过 40。 */
-    {
-        static uint16_t i_raw_peak = 0u;
-        uint16_t i_now = pm.adc.ia;
+    /* ===== 调试输出 16 通道 (100Hz) =====
+     * U14 (TLV9001) 焊上之后电流采样已经有效, 所以这里直接发换算后的安培值。
+     * 之前发的是原始 ADC 计数, 那是 U14 没焊时的临时方案, 上位机看不出来是多少 A。
+     *
+     *   0  机械角(°)      1  累计角(rad)    2  母线(V)      3  vq给定(V)
+     *   4  故障掩码       5  ia(A)         6  ib(A)        7  ic(A)
+     *   8  id实测(A)      9  iq实测(A)    10  iq给定(A)   11  id给定(A)
+     *  12  实测转速(rad/s) 13 MOS温度(°C)  14 电流峰值(A)  15 编码器CRC
+     */
+    vofa_send_data(0,  mt6701.angle);
+    vofa_send_data(1,  mt6701.total_rad);
+    vofa_send_data(2,  pm.foc.vbus);
+    vofa_send_data(3,  pm.ctrl.vq_set);
+    vofa_send_data(4,  (float)pm.fault.all);
 
-        if (pm.adc.ib > i_now)
-        {
-            i_now = pm.adc.ib;
-        }
-        if (pm.adc.ic > i_now)
-        {
-            i_now = pm.adc.ic;
-        }
-        if (i_now > i_raw_peak)
-        {
-            i_raw_peak = i_now;
-        }
-        vofa_send_data(4, (float)i_raw_peak);
+    vofa_send_data(5,  pm.foc.i_a);
+    vofa_send_data(6,  pm.foc.i_b);
+    vofa_send_data(7,  pm.foc.i_c);
+    vofa_send_data(8,  pm.foc.i_d);
+    vofa_send_data(9,  pm.foc.i_q);
+    vofa_send_data(10, pm.ctrl.iq_set);
+    vofa_send_data(11, pm.ctrl.id_set);
+
+    vofa_send_data(12, pm.foc.wr);
+    vofa_send_data(13, ntc_mos.temp);
+    /* 电流幅值峰值, 一直保持。停机之后也能看出刚才最大到过多少 A */
+    {
+        static float i_amp_peak = 0.0f;
+        float i_amp = pm.foc.i_a;
+        float t;
+
+        if (pm.foc.i_b > i_amp) { i_amp = pm.foc.i_b; }
+        if (pm.foc.i_c > i_amp) { i_amp = pm.foc.i_c; }
+        if (-pm.foc.i_b > i_amp) { i_amp = -pm.foc.i_b; }
+        if (-pm.foc.i_c > i_amp) { i_amp = -pm.foc.i_c; }
+        t = i_amp < 0.0f ? -i_amp : i_amp;
+        if (t > i_amp_peak) { i_amp_peak = t; }
+        vofa_send_data(14, i_amp_peak);
     }
-    vofa_send_data(5, mt6701.total_rad);
-    vofa_send_data(6, ntc_mos.temp);      /* NTC1 板载 MOS   (PB1)  */
-    vofa_send_data(7, pm.ctrl.vq_set);    /* 0 = 没在输出电压 */
-    vofa_send_data(8, (float)pm.fault.all);  /* 故障掩码: 0 = 正常 */
-    vofa_send_data(9, pm.foc.vbus);          /* 母线电压 (V) */
-    /* 10/11 发原始 ADC 计数而不是换算后的电流:
-     * U14 没焊时 VREF=0, RS624 输出是单极性的, 换算后的电流值是错的,
-     * 但原始计数仍然单调反映电流大小 —— 诊断"只抖不转"要看的就是它。
-     * 换算: I ≈ (counts - 20) / 24.8  安培 */
-    vofa_send_data(10, (float)pm.adc.ia);    /* A 相原始计数 */
-    vofa_send_data(11, (float)pm.adc.ic);    /* C 相原始计数 */
+    vofa_send_data(15, (float)mt6701.crc_ok);
     vofa_sendframetail();
 
     HAL_Delay(10);
