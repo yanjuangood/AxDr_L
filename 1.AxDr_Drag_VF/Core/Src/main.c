@@ -237,6 +237,10 @@ int main(void)
      * 这样上位机改一个 mode 或 spd, 下一个 50us 中断就生效, 没有额外延迟。 */
     host_cmd_poll();
 
+    /* 转速测量必须在主循环做: 编码器是这里读的, 在 20kHz 中断里微分
+     * 同一个角度值只会得到尖峰噪声。详见 spd_measure_update() 的说明 */
+    spd_measure_update();
+
     if (host_cal_request != 0u)
     {
         /* 标定期间由 calib_run 自己管 ctrl_bit, 结束后清标志 */
@@ -249,7 +253,16 @@ int main(void)
     }
     else
     {
-        /* START / STOP 只改 ctrl_bit; 已经在跑就保持 opera */
+        /* START / STOP 只改 ctrl_bit; 已经在跑就保持 opera。
+         * host_start_request 是运动类参数写入 (mode/spd/iq...) 时置的 ——
+         * STOP 之后单靠下面那句是起不来的 (ctrl_bit 已经是 reset),
+         * 所以这里要显式回到 start 让状态机重新开 PWM */
+        if (host_start_request != 0u)
+        {
+            host_start_request = 0u;
+            pm.ctrl_bit = start;
+        }
+
         if (pm.ctrl_bit != reset)
         {
             pm.ctrl_bit = opera;
@@ -375,7 +388,7 @@ int main(void)
     vofa_send_data(10, pm.ctrl.iq_set);
     vofa_send_data(11, pm.ctrl.id_set);
 
-    vofa_send_data(12, pm.foc.wr);
+    vofa_send_data(12, spd_wr_meas);
     vofa_send_data(13, ntc_mos.temp);
     /* 电流幅值峰值, 一直保持。停机之后也能看出刚才最大到过多少 A */
     {

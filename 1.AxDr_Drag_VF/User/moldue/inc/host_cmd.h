@@ -35,6 +35,9 @@ extern float host_enc_dir;
 /* 上位机发 CAL 时置 1, 主循环看到后跑一次电角度标定 */
 extern volatile uint8_t host_cal_request;
 
+/* 运动类参数 (mode/spd/iq/id/vq/vd) 被写入时置 1, 主循环看到后重新使能输出 */
+extern volatile uint8_t host_start_request;
+
 /* 在 CDC_Receive_FS() 里调用: 把收到的字节喂进环形缓冲 (中断上下文, 只搬运) */
 void host_cmd_feed(const uint8_t *buf, uint32_t len);
 

@@ -1583,6 +1583,34 @@ extern volatile uint8_t calib_step;
  * sensory_pos_calc() 用它, 上位机可以改。详见 foc_loop.c 的说明 */
 extern float host_enc_dir;
 
+/* ---- 速度环运行时参数 (定义在 host_cmd.c, 上位机可实时改) ----
+ *
+ * 为什么要做成运行时:
+ *   原来的增益是按模型整定的 kp = wc*Js, ki = wc*B*ts, 其中 Js 和 B
+ *   都是估的 (51g 云台电机, 没实测过惯量)。估错了要么太软跟不上,
+ *   要么太硬振荡。做成可调就能一边看波形一边试, 不用反复编译烧录。
+ *
+ * host_spd_kp > 0 时直接用 host_spd_kp / host_spd_ki, 忽略模型整定。 */
+extern float host_spd_bw;       /* 速度环带宽 (Hz), 仅模型整定时用 */
+extern float host_spd_kp;       /* 手调 kp, >0 生效 */
+extern float host_spd_ki;       /* 手调 ki */
+extern float host_spd_sign;     /* 速度环输出极性, 默认 -1, 见下 */
+
+/* 实测机械角速度, 主循环 100Hz 调用。
+ * 必须用这个, 不能用中断里的 foc_spd_measure_M() —— 编码器是主循环读的,
+ * 在 20kHz 中断里微分同一个值只会得到尖峰噪声 */
+void spd_measure_update(void);
+
+/* 主循环测出来的机械角速度 (rad/s)。速度环和上位机都用它,
+ * 不要用 pm.foc.wr —— 那个是中断里算的, 对主循环才更新的编码器角度
+ * 做 20kHz 微分只会得到噪声。详见 foc_loop.c 的说明 */
+extern volatile float spd_wr_meas;
+
+/* ⚠️ 为什么 host_spd_sign 默认 -1:
+ *   实测给 +iq 电机往负方向转 (因为编码器方向和相序的关系, 见 ENC_DIR 的说明)。
+ *   速度环算出来的 iq 如果不取反, 就变成正反馈 —— 一给速度给定就飞车。
+ *   真要改符号, 应该改 ENC_DIR 并且重新标定 e_off, 不要只改这个。 */
+
 /* 电流环静态测试: 电角度钉死, 命令 iq, 验证环是否闭合。
  * 中间量在 ct_i_d / ct_i_q / ct_v_d / ct_v_q / ct_done。实现见 foc_loop.c */
 void curr_test_run(void);

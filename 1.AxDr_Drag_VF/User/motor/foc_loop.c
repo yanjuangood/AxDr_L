@@ -31,12 +31,18 @@ volatile uint8_t enc_volt_en = 0u;
 
 /* 电流给定的对称限幅 (A)。正常运行的最大电流, 保护阈值在 foc_protect.c */
 #define CUR_IQ_LIMIT        2.0f
-
 /* d 轴电流给定: 表贴式永磁电机用 id=0 控制 (最大转矩/电流) */
 #define CUR_ID_SET          0.0f
 
-/* 速度环带宽 (Hz), 一般取电流环带宽的 1/5 ~ 1/10 */
+/* 速度环带宽 (Hz), 一般取电流环带宽的 1/5 ~ 1/10。
+ * 现在主要用 host_spd_bw 这个运行时变量, 这个宏只作后备。 */
 #define SPD_LOOP_BW_HZ      100.0f
+
+/* ---- 转速测量 (spd_measure_update) ---- */
+#define SPD_TS              0.01f   /* 主循环周期, 和 main.c 的 HAL_Delay(10) 对应 */
+/* 一阶低通系数。a = dt/(dt+tau), tau = 1/(2*pi*fc)。
+ * 取 fc = 30Hz, dt = 10ms -> tau = 5.3ms -> a = 0.01/0.0153 = 0.65 */
+#define SPD_LPF_A           0.65f
 
 /**
 ***********************************************************************
@@ -156,7 +162,15 @@ _RAM_FUNC void foc_curr(pmsm_t* pm, float id_set, float iq_set, float pos)
         return;
     }
 
-    pm->foc.mode = foc_curr_mode;
+    /* ⚠️ 这里【不能】写 pm->foc.mode = foc_curr_mode。
+     *
+     * 因为 foc_curr() 是 foc_vel() 的内环: 速度环算完 iq 再调它执行。
+     * 如果这里改了 mode, 下一个 50us 中断里 pmsm_mode_ctrl() 就会看到
+     * foc_curr_mode, 一头扎进电流环分支, 速度环再也没机会跑 ——
+     * 表现就是"设了速度模式, 但 iq_set 一直是 0 / 转速不动"。
+     *
+     * 模式由谁设、就由谁负责: 上位机设 mode, pmsm_mode_ctrl() 按它分派,
+     * 被调用的函数只管算, 不要改分派依据。 */
 
     /* ---- 1. 电流给定限幅 ----
      * 这里限的是「正常运行范围」, 不是保护阈值。
@@ -189,6 +203,59 @@ _RAM_FUNC void foc_curr(pmsm_t* pm, float id_set, float iq_set, float pos)
        此时不更新 CCR, 保持上一次输出, 等下一个周期自己收敛回来 */
 }
 
+/* 主循环测出来的机械角速度 (rad/s)。
+ *
+ * ⚠️ 为什么不直接用 pm.foc.wr:
+ *    foc_drv.c 的 foc_para_calc() 在 20kHz 中断里每 50us 算一次
+ *        pm->foc.wr = foc_spd_measure_M(p_e, 20000) * div_pn
+ *    而 p_e 来自主循环 (100Hz) 才更新的 MT6701。对同一个角度值连续微分
+ *    200 次的结果是每 10ms 蹦一个尖峰 —— 实测 wr 在 -90 ~ +90 之间乱跳,
+ *    速度环拿这种反馈根本没法闭环。
+ *
+ *    所以主循环用 total_rad 自己差分 + 低通, 结果放这个变量,
+ *    速度环和上位机都用它, 和中断里的 pm.foc.wr 互不干扰。 */
+volatile float spd_wr_meas = 0.0f;
+
+/**
+***********************************************************************
+* @brief:      spd_measure_update(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    实测机械角速度, 主循环 100Hz 调用
+*
+*  ⚠️ 为什么必须在主循环算, 不能用 foc_spd_measure_M():
+*     MT6701 是在主循环 (100Hz) 用 SPI 读的, 而 foc_para_calc() 在
+*     20kHz 的电流环中断里跑。对同一个角度值连续微分 200 次的结果是:
+*     每 10ms 蹦一个尖峰、中间全是 0 —— 实测 wr 在 -84 ~ +92 rad/s
+*     之间乱跳, 速度环拿这种反馈根本没法工作。
+*
+*  这里改成用 total_rad 在主循环差分, 再过一阶低通。截止频率取
+*  速度环带宽的 2~3 倍就够, 太高会把噪声放进来, 太低会拖慢响应。
+***********************************************************************
+**/
+void spd_measure_update(void)
+{
+    static float s_prev_rad = 0.0f;
+    static uint8_t s_first = 1u;
+    float drad;
+    float raw;
+
+    if (s_first != 0u)
+    {
+        s_prev_rad = mt6701.total_rad;
+        s_first    = 0u;
+        return;
+    }
+
+    drad       = mt6701.total_rad - s_prev_rad;
+    s_prev_rad = mt6701.total_rad;
+
+    raw = drad / SPD_TS;
+
+    /* 一阶低通: y += a * (x - y) */
+    spd_wr_meas += SPD_LPF_A * (raw - spd_wr_meas);
+}
+
 /**
 ***********************************************************************
 * @brief:      foc_spd_pi_calc(pmsm_t* pm)
@@ -200,19 +267,34 @@ _RAM_FUNC void foc_curr(pmsm_t* pm, float id_set, float iq_set, float pos)
 **/
 void foc_spd_pi_calc(pmsm_t* pm)
 {
-    float wc_spd = M_2PI * SPD_LOOP_BW_HZ;
+    float wc_spd = M_2PI * host_spd_bw;
     float iq;
 
-    /* 速度环增益整定: 转动惯量 Js 与阻尼 B。
-     * 带宽取得比电流环低一档, 保证串级稳定 */
-    pm->vq_pi.kp = wc_spd * pm->para.Js;
-    pm->vq_pi.ki = wc_spd * pm->para.B * pm->period.spd_pid_ts;
+    /* 增益两种来源:
+     *   host_spd_kp > 0  -> 用上位机手调的值, 边看波形边试
+     *   否则             -> 按模型整定 kp = wc*Js, ki = wc*B*ts
+     * Js / B 都是估的, 所以手调优先。 */
+    if (host_spd_kp > 0.0f)
+    {
+        pm->vq_pi.kp = host_spd_kp;
+        pm->vq_pi.ki = host_spd_ki;
+    }
+    else
+    {
+        pm->vq_pi.kp = wc_spd * pm->para.Js;
+        pm->vq_pi.ki = wc_spd * pm->para.B * pm->period.spd_pid_ts;
+    }
     pm->vq_pi.ts = pm->period.spd_pid_ts;
 
     /* 积分限幅 = 电流给定上限, 输出限幅同理 —— 速度环的输出是电流 */
     pid_limit_init(&pm->vq_pi, CUR_IQ_LIMIT, -CUR_IQ_LIMIT, CUR_IQ_LIMIT, -CUR_IQ_LIMIT);
 
-    iq = pdff_ctrl(&pm->vq_pi, pm->ctrl.wr_set, pm->foc.wr);
+    iq = pdff_ctrl(&pm->vq_pi, pm->ctrl.wr_set, spd_wr_meas);
+
+    /* ⚠️ 极性: 实测 +iq 得到负转速, 所以整体取反。
+     * 不取反的话误差越大输出越大、转速越往反方向跑 -> 正反馈 -> 飞车。
+     * 详见 common.h 里 host_spd_sign 的说明 */
+    iq *= host_spd_sign;
 
     /* 再用控制参数里的正反向限幅夹一次 (用户可以在上位机单独限制) */
     pm->ctrl.iq_set = sat1_datf(iq, pm->ctrl.pmax_iq, pm->ctrl.nmax_iq);

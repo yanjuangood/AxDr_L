@@ -34,8 +34,23 @@
  * 定义成运行时变量而不是宏, 这样上位机能改。 */
 float   host_enc_dir = -1.0f;
 
+/* ---- 速度环运行时参数 ---- */
+float   host_spd_bw   = 20.0f;      /* 速度环带宽 (Hz), 仅模型整定时用 */
+float   host_spd_kp   = 0.0f;       /* 手调 kp, >0 生效 */
+float   host_spd_ki   = 0.0f;       /* 手调 ki */
+float   host_spd_sign = -1.0f;      /* 输出极性, 见 common.h 说明 */
+
 /* 电角度零点标定触发标志: 上位机发 CAL 时置 1, 主循环看到后跑一次标定 */
 volatile uint8_t host_cal_request = 0u;
+
+/* 重新使能请求: 收到运动类命令 (mode / spd / iq / id / vq / vd) 时置 1。
+ *
+ * 为什么需要:
+ *   STOP 会把 ctrl_bit 打到 reset, 之后主循环的 "保持在 opera" 逻辑就
+ *   什么都不做了 —— 再设转速也不会有反应, 必须先发 RST。这对上位机用户
+ *   是个大坑 (点了 STOP 再拖转速条, 电机不动, 完全看不出为什么)。
+ *   所以运动类参数一写就自动重新上电, 符合直觉。 */
+volatile uint8_t host_start_request = 0u;
 
 /* ======================= 接收环形缓冲 ======================= */
 static volatile uint8_t  s_rx[HC_RX_SIZE];
@@ -73,7 +88,7 @@ typedef struct
 static const hc_param_t s_params[] =
 {
     /* ---- 运行控制 ---- */
-    { "mode",   PT_I, &pm.foc.mode,      0.0f,      4.0f,  "0=停机 1=电压(V/f) 2=电流 3=速度 4=位置" },
+    { "mode",   PT_I, &pm.foc.mode,      0.0f,      4.0f,  "0=V/f 1=电流 2=速度 3=位置 4=自检 (见 common.h 的 foc_mode_e)" },
     { "spd",    PT_F, &pm.ctrl.wr_set,  -200.0f,  200.0f,  "速度给定 (rad/s, 机械)" },
     { "id",     PT_F, &pm.ctrl.id_set,   -2.0f,     2.0f,  "d 轴电流给定 (A), 表贴式给 0" },
     { "iq",     PT_F, &pm.ctrl.iq_set,   -2.0f,     2.0f,  "q 轴电流给定 (A), 对应转矩" },
@@ -97,6 +112,12 @@ static const hc_param_t s_params[] =
     /* ---- 编码器 / 电角度 ---- */
     { "eoff",   PT_F, &pm.para.e_off,   0.0f,       6.2832f, "电角度零点 (rad)" },
     { "encdir", PT_F, &host_enc_dir,   -1.0f,       1.0f,  "编码器方向 +1/-1" },
+
+    /* ---- 速度环 ---- */
+    { "spdbw",  PT_F, &host_spd_bw,     1.0f,     200.0f,  "速度环带宽 (Hz), 仅模型整定时用" },
+    { "spdkp",  PT_F, &host_spd_kp,     0.0f,      10.0f,  "速度环 kp 手调, >0 时生效 (A/(rad/s))" },
+    { "spdki",  PT_F, &host_spd_ki,     0.0f,      10.0f,  "速度环 ki 手调" },
+    { "spdsgn", PT_F, &host_spd_sign,  -1.0f,       1.0f,  "速度环输出极性, 默认 -1, 别乱改" },
 };
 
 #define HC_NPARAM  (sizeof(s_params) / sizeof(s_params[0]))
@@ -166,6 +187,14 @@ static void hc_set(const hc_param_t *p, float v)
     /* 限幅, 防止上位机手滑 */
     if (v < p->min) { v = p->min; }
     if (v > p->max) { v = p->max; }
+
+    /* 运动类参数: 写完自动重新上电 (见 host_start_request 的说明) */
+    if ((strcmp(p->name, "mode") == 0) || (strcmp(p->name, "spd")  == 0) ||
+        (strcmp(p->name, "iq")   == 0) || (strcmp(p->name, "id")   == 0) ||
+        (strcmp(p->name, "vq")   == 0) || (strcmp(p->name, "vd")   == 0))
+    {
+        host_start_request = 1u;
+    }
 
     switch (p->type)
     {
