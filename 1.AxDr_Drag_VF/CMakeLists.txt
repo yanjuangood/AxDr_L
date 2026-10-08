@@ -58,6 +58,10 @@ add_link_options(
     -Wl,--print-memory-usage
     -Wl,--no-warn-rwx-segments
     -specs=nano.specs
+    # newlib-nano 默认不带 printf 的浮点支持 —— 不加这个, %f / %g 会输出空白。
+    # 上位机命令的回复要打印浮点参数 (电阻、电感、转速...), 所以必须加。
+    # 代价: 多占约 8~10KB Flash。当前 128KB 用不到 60%, 够。
+    -u _printf_float
 )
 
 # -----------------------------------------------------------------------------
@@ -115,6 +119,7 @@ set(APP_SOURCES
 
     # --- 用户代码 ---
     User/moldue/vofa.c
+    User/moldue/host_cmd.c
     User/motor/foc_calc.c
     User/motor/foc_ctrl.c
     User/motor/foc_drv.c

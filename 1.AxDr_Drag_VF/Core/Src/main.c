@@ -29,6 +29,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "host_cmd.h"
+/* USER CODE END Includes */
 #include "common.h"
 #include "modlue.h"
 #include "mt6701.h"
@@ -105,13 +107,19 @@ uint16_t adc2_buff[4];
  *                 看 ce_wr 是否往正方向涨、ce_i_q 是否跟得上。
  *                 这是验证 e_off 标定对不对的最终测试。
  *
- *  ⚠️ 优先级: HWTEST_MODE > CALIB_MODE > CURR_TEST > CURR_ENC_TEST
+ *  HOST_MODE    : 上位机控制。所有测试模式关闭, 由 PC 通过 USB CDC 发命令驱动。
+ *                 中断里的 pmsm_mode_ctrl() 本来就在按 pm.foc.mode 分派,
+ *                 所以这里只要按 START/STOP 开关 ctrl_bit, 剩下的交给中断。
+ *                 协议和参数表见 User/moldue/host_cmd.c, PC 端见 tools/host_gui.py。
+ *
+ *  ⚠️ 优先级: HWTEST_MODE > CALIB_MODE > HOST_MODE > CURR_TEST > CURR_ENC_TEST
  *             > ENCV_TEST > OPENLOOP_TEST, 只会跑一个。
  * ======================================================================== */
 #define HWTEST_MODE         0
 #define CALIB_MODE          0
+#define HOST_MODE           1
 #define CURR_TEST           0
-#define CURR_ENC_TEST       1
+#define CURR_ENC_TEST       0
 #define ENCV_TEST           0
 #define OPENLOOP_TEST       0
 
@@ -214,6 +222,41 @@ int main(void)
      * 必须空载! 上电后自动跑, 约 6 秒完成, 结果写回 pm.para.e_off。
      * 用 VOFA+ 或 SWD 看 calib_e_off_a / calib_e_off_b, 两者应一致。 */
     calib_run();
+
+#elif HOST_MODE
+    /* ===== 上位机控制 =====
+     * 收到上位机的 CAL 命令就跑一次标定, 否则正常听命令。
+     *
+     * 这里不直接驱动电机: 中断里的 pmsm_mode_ctrl() 按 pm.foc.mode 分派,
+     * 已经把 V/f / 电流环 / 速度环三套逻辑都接好了。
+     * 主循环只需要:
+     *   1. 处理串口命令 (改参数、START/STOP)
+     *   2. 把回复发出去
+     *   3. START 之后把 ctrl_bit 保持在 opera, 让中断去跑控制
+     *
+     * 这样上位机改一个 mode 或 spd, 下一个 50us 中断就生效, 没有额外延迟。 */
+    host_cmd_poll();
+
+    if (host_cal_request != 0u)
+    {
+        /* 标定期间由 calib_run 自己管 ctrl_bit, 结束后清标志 */
+        calib_run();
+        if (calib_step == 5u)       /* CALIB_DONE */
+        {
+            host_cal_request = 0u;
+            pm.ctrl_bit      = reset;
+        }
+    }
+    else
+    {
+        /* START / STOP 只改 ctrl_bit; 已经在跑就保持 opera */
+        if (pm.ctrl_bit != reset)
+        {
+            pm.ctrl_bit = opera;
+        }
+    }
+
+    host_cmd_tx_task();
 
 #elif CURR_ENC_TEST
     /* ===== 真 FOC: 编码器电角度 + 电流环 =====

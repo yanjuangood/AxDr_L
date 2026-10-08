@@ -1576,6 +1576,13 @@ void hwt_self_test_run(void);
  * 中间结果在 calib_e_off_a / calib_e_off_b 里, 两者应一致。实现见 foc_loop.c */
 void calib_run(void);
 
+/* 标定状态机步骤 (定义在 foc_loop.c)。5 = CALIB_DONE */
+extern volatile uint8_t calib_step;
+
+/* 编码器计数方向 +1/-1 的运行时变量 (定义在 host_cmd.c)。
+ * sensory_pos_calc() 用它, 上位机可以改。详见 foc_loop.c 的说明 */
+extern float host_enc_dir;
+
 /* 电流环静态测试: 电角度钉死, 命令 iq, 验证环是否闭合。
  * 中间量在 ct_i_d / ct_i_q / ct_v_d / ct_v_q / ct_done。实现见 foc_loop.c */
 void curr_test_run(void);

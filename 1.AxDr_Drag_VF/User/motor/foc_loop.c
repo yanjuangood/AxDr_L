@@ -59,11 +59,12 @@ volatile uint8_t enc_volt_en = 0u;
  *            2026-10 首次跑真 FOC 时就是这个症状 (iq=0.2A 时 ce_wr 在
  *            -13 ~ +26 rad/s 之间乱跳, 但转子只动 0.95 度), 改成 -1 后正常。
  *
- *  ⚠️ 改这个值之后 e_off 必须重新标定 (CALIB_MODE), 因为标定公式
- *     e_off = CALIB_ANG - rad*pn 依赖于同一个方向约定。
+ *  这个值现在是运行时变量 host_enc_dir (定义在 host_cmd.c),
+ *  上位机可以改, 方便换电机/换编码器安装方向时不用重新编译。
+ *
+ *  ⚠️ 改这个值之后 e_off 必须重新标定 (CALIB_MODE / 上位机发 CAL),
+ *     因为标定公式 e_off = CALIB_ANG - rad*pn 依赖于同一个方向约定。
  *     换方向时可以手算: e_off_new = CALIB_ANG + rad*pn */
-#define ENC_DIR             (-1.0f)
-
 void sensory_pos_calc(pmsm_t* pm)
 {
     /* 编码器 CRC 不过 -> 角度不可信, 置故障停机。
@@ -77,7 +78,7 @@ void sensory_pos_calc(pmsm_t* pm)
     /* 机械角 (rad, 0~2pi) * 极对数 + 电角度零点偏移 = 电角度
      * 用 mt6701.rad 而不是 total_rad: rad 被限制在 0~2pi, 浮点精度更好,
      * 累计圈数多了之后 total_rad 的有效位会被吃掉 */
-    pm->foc.p_e = ENC_DIR * (mt6701.rad * pm->para.pn) + pm->para.e_off;
+    pm->foc.p_e = host_enc_dir * (mt6701.rad * pm->para.pn) + pm->para.e_off;
 
     /* 归一化到 [0, 2pi) */
     wrap_0_2pi(pm->foc.p_e);
