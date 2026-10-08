@@ -26,6 +26,9 @@
 #include "common.h"
 #include "mt6701.h"
 
+/* 1 = 用编码器电角度做电压控制，核对标定得到的 e_off */
+volatile uint8_t enc_volt_en = 0u;
+
 /* 电流给定的对称限幅 (A)。正常运行的最大电流, 保护阈值在 foc_protect.c */
 #define CUR_IQ_LIMIT        2.0f
 
@@ -45,6 +48,22 @@
 *              所以这一步是闭环的前提。角度不对电机会乱转甚至堵转发热
 ***********************************************************************
 **/
+/* 编码器计数方向相对 FOC 相序的方向。
+ *
+ *   +1 : 转子顺着相序正方向转时, mt6701.rad 增大
+ *   -1 : 反过来
+ *
+ *  怎么判断: 如果方向反了, 电流环就成了正反馈 ——
+ *            转子动一点, 命令角度往反方向跑, 转矩跟着翻转,
+ *            结果是原地来回颤、净位移为零, 而且电流越大颤得越凶。
+ *            2026-10 首次跑真 FOC 时就是这个症状 (iq=0.2A 时 ce_wr 在
+ *            -13 ~ +26 rad/s 之间乱跳, 但转子只动 0.95 度), 改成 -1 后正常。
+ *
+ *  ⚠️ 改这个值之后 e_off 必须重新标定 (CALIB_MODE), 因为标定公式
+ *     e_off = CALIB_ANG - rad*pn 依赖于同一个方向约定。
+ *     换方向时可以手算: e_off_new = CALIB_ANG + rad*pn */
+#define ENC_DIR             (-1.0f)
+
 void sensory_pos_calc(pmsm_t* pm)
 {
     /* 编码器 CRC 不过 -> 角度不可信, 置故障停机。
@@ -58,7 +77,7 @@ void sensory_pos_calc(pmsm_t* pm)
     /* 机械角 (rad, 0~2pi) * 极对数 + 电角度零点偏移 = 电角度
      * 用 mt6701.rad 而不是 total_rad: rad 被限制在 0~2pi, 浮点精度更好,
      * 累计圈数多了之后 total_rad 的有效位会被吃掉 */
-    pm->foc.p_e = mt6701.rad * pm->para.pn + pm->para.e_off;
+    pm->foc.p_e = ENC_DIR * (mt6701.rad * pm->para.pn) + pm->para.e_off;
 
     /* 归一化到 [0, 2pi) */
     wrap_0_2pi(pm->foc.p_e);
@@ -745,4 +764,210 @@ void calib_run(void)
         pm.ctrl_bit = reset;    /* 标定完立刻关输出, 别再加热电机 */
         break;
     }
+}
+
+/* ===========================================================================
+ *  电流环静态测试 (curr_test_run)
+ *
+ *  用途: 第一次跑电流闭环时, 先不转, 只验证「环闭合、符号对、采样相位对」。
+ *
+ *  做法: 把电角度**钉死**在 CT_ANGLE, 命令 id=0 / iq=CT_IQ_SET。
+ *        因为角度不跟着编码器走, 电流矢量在空间里是固定的:
+ *
+ *            定子磁动势固定在 CT_ANGLE + 90°
+ *                    ↓
+ *            转子 d 轴被吸过去, 停在这个方向 (转一下就不动了)
+ *                    ↓
+ *            此时电流矢量正好落在转子的 d 轴上 -> 不产生转矩 -> 稳定
+ *
+ *        稳定后 PI 应该把 i_d 调到 0、i_q 调到 CT_IQ_SET。
+ *
+ *  怎么看结果:
+ *        ct_i_d  应该 ≈ 0
+ *        ct_i_q  应该 ≈ CT_IQ_SET
+ *        ct_v_d / ct_v_q 是 PI 输出, 不应顶到限幅
+ *
+ *  ⚠️ 如果 PI 极性接反 / 采样相位错, 电流会自己发散到电压限幅。
+ *     所以这里加了 CT_ABORT_A 兜底: 任一相电流超过就立刻停机。
+ * =========================================================================== */
+#define CT_TS        0.01f      /* 主循环周期 (秒) */
+#define CT_IQ_SET    0.15f      /* q 轴电流给定 (A)。先给小值, 验证通了再加大 */
+#define CT_ANGLE     0.0f       /* 钉死的电角度 (rad) */
+#define CT_HOLD_S    300.0f     /* 跑这么久后自动停机 (诊断期间放长, 方便看波形) */
+#define CT_ABORT_A   0.60f      /* 电流超过这个值就立刻停机 (兜底保护) */
+
+volatile uint8_t ct_done = 0u;  /* 1 = 测试结束 */
+volatile float   ct_i_d  = 0.0f;
+volatile float   ct_i_q  = 0.0f;
+volatile float   ct_v_d  = 0.0f;
+volatile float   ct_v_q  = 0.0f;
+volatile float   ct_ia   = 0.0f;    /* 三相实测电流, 用来判断采样是否正常 */
+volatile float   ct_ib   = 0.0f;
+volatile float   ct_ic   = 0.0f;
+volatile float   ct_t    = 0.0f;
+
+/**
+***********************************************************************
+* @brief:      curr_test_run(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    电流环静态测试, 固定电角度 + 电流闭环。主循环 100Hz 调用
+***********************************************************************
+**/
+void curr_test_run(void)
+{
+    /* 已经结束了就别再输出 */
+    if (ct_done != 0u)
+    {
+        pm.ctrl_bit = reset;
+        return;
+    }
+
+    /* 母线没起来就别动 */
+    if (pm.foc.vbus < 8.0f)
+    {
+        return;
+    }
+
+    /* 兜底: 电流异常立刻停机, 防止 PI 极性错误时发散 */
+    if ((pm.foc.i_a > CT_ABORT_A) || (pm.foc.i_a < -CT_ABORT_A) ||
+        (pm.foc.i_b > CT_ABORT_A) || (pm.foc.i_b < -CT_ABORT_A) ||
+        (pm.foc.i_c > CT_ABORT_A) || (pm.foc.i_c < -CT_ABORT_A))
+    {
+        ct_done     = 1u;
+        pm.ctrl_bit = reset;
+        return;
+    }
+
+    /* 到时间就停 */
+    ct_t += CT_TS;
+    if (ct_t >= CT_HOLD_S)
+    {
+        ct_done     = 1u;
+        pm.ctrl_bit = reset;
+        return;
+    }
+
+    pm.ctrl_bit = opera;
+
+    /* 电角度钉死, 不走编码器 —— 这样空间矢量固定, 转子停住不转 */
+    foc_curr(&pm, 0.0f, CT_IQ_SET, CT_ANGLE);
+
+    /* 把中间量留下来给 SWD 读 */
+    ct_i_d = pm.foc.i_d;
+    ct_i_q = pm.foc.i_q;
+    ct_v_d = pm.foc.v_d;
+    ct_v_q = pm.foc.v_q;
+    ct_ia  = pm.foc.i_a;
+    ct_ib  = pm.foc.i_b;
+    ct_ic  = pm.foc.i_c;
+}
+
+/* ===========================================================================
+ *  真 FOC 测试: 编码器角度 + 电流环 (curr_enc_test_run)
+ *
+ *  和静态测试的唯一区别: 电角度不再是钉死的, 而是来自编码器
+ *            p_e = mt6701.rad * pn + e_off
+ *  这就是真正的磁场定向控制。
+ *
+ *  为什么这次不会像静态测试那样振:
+ *        电流矢量跟着转子走, 始终落在转子的 dq 轴上, 是纯转矩
+ *        没有"磁弹簧", 也就没有那个 13Hz 的谐振
+ *
+ *  ⚠️ 安全问题: 给 iq 就是给转矩。这台电机 J≈1e-5, 0.15A 的角加速度是
+ *     Kt*iq/J = 0.0651*0.15/1e-5 = 977 rad/s^2 (9300 rpm/s) —— 会飞车。
+ *     所以这里加了简单的转速上限: 超过 CE_WMAX 就把 iq 撤成 0 让它滑行。
+ *     这是个 bang-bang 限速, 不是速度环, 目的是安全地验证角度链路。
+ *
+ *  怎么看结果:
+ *        ce_wr   实测机械角速度。给正 iq 应该往正方向涨
+ *        ce_i_q  应该跟着 iq 给定走
+ *        ce_done 1 = 测试结束
+ * =========================================================================== */
+#define CE_IQ        0.20f      /* q 轴电流给定 (A)。0.03 推不动齿槽, 提到 0.20 */
+#define CE_WMAX      40.0f      /* 转速上限 (rad/s) = 382 rpm, 超了撤 iq */
+#define CE_HOLD_S    25.0f      /* 跑这么久后停机 */
+#define CE_ABORT_A   0.60f      /* 任一相电流超过就停机 */
+
+volatile uint8_t ce_done = 0u;
+volatile float   ce_wr   = 0.0f;    /* 实测机械角速度 (rad/s) */
+volatile float   ce_i_q  = 0.0f;
+volatile float   ce_i_d  = 0.0f;
+volatile float   ce_p_e  = 0.0f;    /* 编码器算出来的电角度 */
+volatile float   ce_rad  = 0.0f;    /* 机械角 */
+volatile float   ce_t    = 0.0f;
+
+static float ce_rad_prev = 0.0f;
+static float ce_iq_now   = 0.0f;
+
+/**
+***********************************************************************
+* @brief:      curr_enc_test_run(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    真 FOC: 编码器电角度 + 电流环 + 转速上限。主循环 100Hz 调用
+***********************************************************************
+**/
+void curr_enc_test_run(void)
+{
+    float drad;
+
+    if (ce_done != 0u)
+    {
+        pm.ctrl_bit = reset;
+        return;
+    }
+
+    if (pm.foc.vbus < 8.0f)
+    {
+        return;
+    }
+
+    /* 兜底: 电流异常立刻停机 */
+    if ((pm.foc.i_a > CE_ABORT_A) || (pm.foc.i_a < -CE_ABORT_A) ||
+        (pm.foc.i_b > CE_ABORT_A) || (pm.foc.i_b < -CE_ABORT_A) ||
+        (pm.foc.i_c > CE_ABORT_A) || (pm.foc.i_c < -CE_ABORT_A))
+    {
+        ce_done     = 1u;
+        pm.ctrl_bit = reset;
+        return;
+    }
+
+    /* 到时间就停 */
+    ce_t += CT_TS;
+    if (ce_t >= CE_HOLD_S)
+    {
+        ce_done     = 1u;
+        pm.ctrl_bit = reset;
+        return;
+    }
+
+    pm.ctrl_bit = opera;
+
+    /* ---- 1. 编码器 -> 电角度 ---- */
+    sensory_pos_calc(&pm);              /* p_e = mt6701.rad * pn + e_off */
+
+    /* ---- 2. 实测转速 (用 total_rad 差分, 不依赖 foc 内部计算) ---- */
+    drad        = mt6701.total_rad - ce_rad_prev;
+    ce_rad_prev = mt6701.total_rad;
+    ce_wr       = drad / CT_TS;
+
+    /* ---- 3. 简单限速: 超了就撤 iq 让它滑行 ---- */
+    if ((ce_wr > CE_WMAX) || (ce_wr < -CE_WMAX))
+    {
+        ce_iq_now = 0.0f;
+    }
+    else
+    {
+        ce_iq_now = CE_IQ;
+    }
+
+    /* ---- 4. 电流环, 用真实电角度 ---- */
+    foc_curr(&pm, 0.0f, ce_iq_now, pm.foc.p_e);
+
+    /* ---- 5. 记录 ---- */
+    ce_i_q = pm.foc.i_q;
+    ce_i_d = pm.foc.i_d;
+    ce_p_e = pm.foc.p_e;
+    ce_rad = pm.foc.p_e;                /* 预留 */
 }

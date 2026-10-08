@@ -123,6 +123,18 @@ _RAM_FUNC void pmsm_mode_ctrl(pmsm_t* pm)
 **/
 _RAM_FUNC void force_volt_mode(pmsm_t* pm)
 {
+    /* 标定核对：电压矢量跟磁铁 d 轴走。e_off 对的话，q 轴电压会让转子持续转 */
+    if (enc_volt_en != 0u)
+    {
+        sensory_pos_calc(pm);
+        if (pm->fault.bit.enc_err != 0u)
+        {
+            return;
+        }
+        foc_volt(pm, pm->ctrl.vd_set, pm->ctrl.vq_set, pm->foc.p_e);
+        return;
+    }
+
     // Calculate electrical angular velocity from reference speed
     pm->ctrl.we_set = pm->ctrl.wr_set * pm->para.pn;
     // Calculate position increment per FOC period

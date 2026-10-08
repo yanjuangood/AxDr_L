@@ -1560,6 +1560,9 @@ void force_volt_mode(pmsm_t* pm);
 void open_volt_mode(pmsm_t* pm);
 void force_curr_mode(pmsm_t* pm);
 
+/* 1 = 电压矢量跟编码器电角度走，用来核对 e_off。0 = 原来的拖拽角 */
+extern volatile uint8_t enc_volt_en;
+
 /* 开环 V/f 测试 (实现见 foc_loop.c)。主循环调用 openloop_test_run() */
 void openloop_test_start(void);
 void openloop_test_stop(void);
@@ -1572,6 +1575,14 @@ void hwt_self_test_run(void);
 /* 电角度零点 e_off 自动标定。上电后自动跑, 标定完写回 pm.para.e_off。
  * 中间结果在 calib_e_off_a / calib_e_off_b 里, 两者应一致。实现见 foc_loop.c */
 void calib_run(void);
+
+/* 电流环静态测试: 电角度钉死, 命令 iq, 验证环是否闭合。
+ * 中间量在 ct_i_d / ct_i_q / ct_v_d / ct_v_q / ct_done。实现见 foc_loop.c */
+void curr_test_run(void);
+
+/* 真 FOC 测试: 编码器电角度 + 电流环 + 转速上限。
+ * 中间量在 ce_wr / ce_i_q / ce_i_d / ce_p_e / ce_done。实现见 foc_loop.c */
+void curr_enc_test_run(void);
 
 void sensory_pos_calc(pmsm_t* pm);
 void senless_pos_calc(pmsm_t* pm);

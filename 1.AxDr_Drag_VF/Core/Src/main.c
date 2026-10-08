@@ -92,11 +92,28 @@ uint16_t adc2_buff[4];
  *                 读出编码器算出 e_off, 并直接写回 pm.para.e_off。
  *                 中间结果在 calib_e_off_a / calib_e_off_b, 两者应一致。
  *
- *  ⚠️ 优先级: HWTEST_MODE > CALIB_MODE > OPENLOOP_TEST, 只会跑一个。
+ *  ENCV_TEST    : 用标定后的电角度加 1.5V q 轴电压。空载应持续转动约 5 秒。
+ *                 只抖不转说明 e_off 还不对。
+ *
+ *  CURR_TEST    : 电流环静态测试。电角度钉死在 0 度, 命令 id=0 / iq=0.15A,
+ *                 电流闭环。转子会被吸住停着不转 —— 这是有意的。
+ *                 看 ct_i_q 是否跟到 0.15, ct_i_d 是否接近 0。
+ *                 任一相电流超过 0.6A 会自动停机 (防 PI 极性接反时发散)。
+ *
+ *  CURR_ENC_TEST: 真 FOC —— 电角度来自编码器 (p_e = rad*pn + e_off) + 电流环。
+ *                 iq 给 0.03A, 电机会平稳转起来; 超过 40 rad/s 撤 iq 滑行。
+ *                 看 ce_wr 是否往正方向涨、ce_i_q 是否跟得上。
+ *                 这是验证 e_off 标定对不对的最终测试。
+ *
+ *  ⚠️ 优先级: HWTEST_MODE > CALIB_MODE > CURR_TEST > CURR_ENC_TEST
+ *             > ENCV_TEST > OPENLOOP_TEST, 只会跑一个。
  * ======================================================================== */
 #define HWTEST_MODE         0
 #define CALIB_MODE          0
-#define OPENLOOP_TEST       1
+#define CURR_TEST           0
+#define CURR_ENC_TEST       1
+#define ENCV_TEST           0
+#define OPENLOOP_TEST       0
 
 /* USER CODE END 0 */
 
@@ -197,6 +214,81 @@ int main(void)
      * 必须空载! 上电后自动跑, 约 6 秒完成, 结果写回 pm.para.e_off。
      * 用 VOFA+ 或 SWD 看 calib_e_off_a / calib_e_off_b, 两者应一致。 */
     calib_run();
+
+#elif CURR_ENC_TEST
+    /* ===== 真 FOC: 编码器电角度 + 电流环 =====
+     * p_e = mt6701.rad * pn + e_off, 电流环跟着转子走。
+     * 给 iq = 0.03A 电机应平稳转起来, 超过 40 rad/s 撤 iq 滑行。
+     * 看 ce_wr / ce_i_q / ce_i_d / ce_p_e / ce_done。 */
+    curr_enc_test_run();
+
+#elif CURR_TEST
+    /* ===== 电流环静态测试 =====
+     * 电角度钉死在 0 度 -> 空间矢量固定 -> 转子被吸住不转。
+     * 电流环应该把 i_q 调到 0.15A、i_d 调到 0。
+     * 看 ct_i_d / ct_i_q / ct_v_d / ct_v_q / ct_done (SWD 直接读)。 */
+    curr_test_run();
+
+#elif ENCV_TEST
+    /* 上电 2 秒后，用编码器电角度输出 0.8V。转够约 5 秒或发现不转就停 */
+    {
+        static uint32_t enc_n  = 0u;
+        static float    rad0   = 0.0f;
+        static uint8_t  active = 0u;
+
+        enc_n++;
+        if (pm.fault.bit.enc_err != 0u)
+        {
+            enc_volt_en    = 0u;
+            pm.ctrl.vq_set = 0.0f;
+            pm.ctrl_bit    = reset;
+            active         = 0u;
+        }
+        else if (enc_n < 200u)
+        {
+            /* 等母线和编码器稳定 */
+        }
+        else if (enc_n == 200u)
+        {
+            rad0           = mt6701.total_rad;
+            enc_volt_en    = 1u;
+            pm.foc.mode    = foc_volt_mode;
+            pm.ctrl.vd_set = 0.0f;
+            pm.ctrl.vq_set = 1.5f;
+            pm.ctrl.wr_set = 0.0f;
+            pm.ctrl_bit    = opera;
+            active         = 1u;
+        }
+        else if (active != 0u && enc_n < 700u)
+        {
+            float moved = mt6701.total_rad - rad0;
+            if (moved < 0.0f)
+            {
+                moved = -moved;
+            }
+            /* 出力 1.5 秒后机械角几乎没变，判定没对上，立刻停 */
+            if (enc_n > 350u && moved < 0.4f)
+            {
+                enc_volt_en    = 0u;
+                pm.ctrl.vq_set = 0.0f;
+                pm.ctrl_bit    = reset;
+                active         = 0u;
+            }
+            else
+            {
+                pm.foc.mode    = foc_volt_mode;
+                pm.ctrl.vq_set = 1.5f;
+                pm.ctrl_bit    = opera;
+            }
+        }
+        else
+        {
+            enc_volt_en    = 0u;
+            pm.ctrl.vq_set = 0.0f;
+            pm.ctrl_bit    = reset;
+            active         = 0u;
+        }
+    }
 
 #elif OPENLOOP_TEST
     /* ===== 开环 V/f 测试 =====
