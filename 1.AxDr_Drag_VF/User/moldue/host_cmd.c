@@ -52,6 +52,18 @@ volatile uint8_t host_cal_request = 0u;
  *   所以运动类参数一写就自动重新上电, 符合直觉。 */
 volatile uint8_t host_start_request = 0u;
 
+/* ---- 编码器角度误差谐波补偿系数 (由 tools/ecc_cal.py 标定后下发) ----
+ * 默认全 0 且关闭, 不影响任何现有行为。
+ * ⚠️ host_ecc_en 用 uint32_t 而不是 uint8_t: 参数表里按 PT_U 写 4 字节,
+ *    如果它是 uint8_t 就会覆盖相邻变量。 */
+volatile uint32_t host_ecc_en = 0u;
+float host_ecc_a1 = 0.0f;   /* 1 次谐波幅度 (rad) */
+float host_ecc_p1 = 0.0f;   /* 1 次谐波相位 (rad) */
+float host_ecc_a2 = 0.0f;
+float host_ecc_p2 = 0.0f;
+float host_ecc_a3 = 0.0f;
+float host_ecc_p3 = 0.0f;
+
 /* ======================= 接收环形缓冲 ======================= */
 static volatile uint8_t  s_rx[HC_RX_SIZE];
 static volatile uint16_t s_rx_head = 0u;
@@ -118,6 +130,15 @@ static const hc_param_t s_params[] =
     { "spdkp",  PT_F, &host_spd_kp,     0.0f,      10.0f,  "速度环 kp 手调, >0 时生效 (A/(rad/s))" },
     { "spdki",  PT_F, &host_spd_ki,     0.0f,      10.0f,  "速度环 ki 手调" },
     { "spdsgn", PT_F, &host_spd_sign,  -1.0f,       1.0f,  "速度环输出极性, 默认 -1, 别乱改" },
+
+    /* ---- 编码器角度误差谐波补偿 (tools/ecc_cal.py 标定后下发) ---- */
+    { "eccen",  PT_U, &host_ecc_en,     0.0f,       1.0f,  "角度谐波补偿开关 0/1" },
+    { "ecca1",  PT_F, &host_ecc_a1,   -0.35f,      0.35f,  "1 次谐波幅度 (rad), ±20 度" },
+    { "eccp1",  PT_F, &host_ecc_p1,   -6.2832f,    6.2832f, "1 次谐波相位 (rad)" },
+    { "ecca2",  PT_F, &host_ecc_a2,   -0.35f,      0.35f,  "2 次谐波幅度 (rad)" },
+    { "eccp2",  PT_F, &host_ecc_p2,   -6.2832f,    6.2832f, "2 次谐波相位 (rad)" },
+    { "ecca3",  PT_F, &host_ecc_a3,   -0.35f,      0.35f,  "3 次谐波幅度 (rad)" },
+    { "eccp3",  PT_F, &host_ecc_p3,   -6.2832f,    6.2832f, "3 次谐波相位 (rad)" },
 };
 
 #define HC_NPARAM  (sizeof(s_params) / sizeof(s_params[0]))

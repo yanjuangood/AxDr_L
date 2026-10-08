@@ -9,10 +9,20 @@
   ******************************************************************************
   */
 #include "mt6701.h"
+#include "host_cmd.h"       /* 角度误差谐波补偿系数 host_ecc_* */
 #include <string.h>
 #include <math.h>
 
 mt6701_t mt6701;
+
+/* 累计重读次数 (CRC 第一次没过、重读才拿到的次数)。
+ * 用 SWD 读这个值可以判断 SPI 信号质量: 转起来时如果增长很快,
+ * 说明开关噪声耦合严重, 该查硬件了 (缩短排线 / 加屏蔽 / 降 SPI 时钟)。 */
+volatile uint32_t mt6701_retry_cnt = 0u;
+
+/* CRC 不过时重读几次。噪声是随机的, 隔几微秒再读通常就好;
+ * 次数不能太多, 否则会拖慢主循环 (每次读约几十 us)。 */
+#define MT6701_RETRY    3u
 
 /* ===================== 内部小工具 ===================== */
 
@@ -200,52 +210,93 @@ uint8_t mt6701_read(mt6701_t *e)
 {
     uint32_t f;
     float prev_rad;
+    uint8_t tries;
 
     if (e == NULL)
     {
         return 0u;
     }
 
-    if (!mt6701_transfer(&f))
+    /* ---- 取值 + CRC 校验, 不过就立刻重读 ----
+     *
+     * 为什么要重读:
+     *   MT6701 的 SPI 和 20kHz 功率级在同一块板上。实测静止时 CRC
+     *   一个都不错 (3 秒 111 帧全好), 一旦电机转起来就开始零星出错 ——
+     *   典型的开关噪声耦合。
+     *
+     *   而坏帧不能用来更新角度:
+     *       垃圾 raw -> 垃圾 rad -> 圈数判方向的差值 d 很大 ->
+     *       turns 误加/误减 1 -> total_rad 直接跳 2*pi
+     *   速度环就是拿 total_rad 做差分的, 一次 CRC 错就在转速上打一个尖峰。
+     *
+     *   但也不能简单"冻结角度": 错误率一高, total_rad 就长期不动,
+     *   测速恒为 0 -> 速度环以为电机停了, 拼命加速 -> 偶尔来一帧好的
+     *   又猛收 -> 转速在 0 和 ~10 rad/s 之间来回蹦, 靠占空比凑平均值
+     *   (实测给定 3/6/8/12 时最小值都是 ~0 最大值都是 ~10)。
+     *
+     *   所以最好的做法是重读: 噪声是随机的, 隔几微秒再读一次通常就好了。 */
+    e->crc_ok = 0u;
+    for (tries = 0u; tries < MT6701_RETRY; tries++)
     {
-        e->crc_ok = 0u;
-        e->err_cnt++;
-        return 0u;
+        if (!mt6701_transfer(&f))
+        {
+            continue;
+        }
+
+        e->frame    = f;
+        e->raw      = (uint16_t)((f >> 10) & 0x3FFFu);
+        e->mg       = (uint8_t)((f >> 6) & 0x0Fu);
+        e->crc_rx   = (uint8_t)(f & 0x3Fu);
+        e->crc_calc = mt6701_crc6((f >> 6) & 0x3FFFFu);
+        e->crc_ok   = ((e->crc_calc == e->crc_rx) && mt6701_frame_ok(f)) ? 1u : 0u;
+
+        if (e->crc_ok != 0u)
+        {
+            break;
+        }
+        mt6701_retry_cnt++;     /* 重读次数, 用 SWD 看信号质量 */
     }
 
-    e->frame    = f;
-    e->raw      = (uint16_t)((f >> 10) & 0x3FFFu);
-    e->mg       = (uint8_t)((f >> 6) & 0x0Fu);
-    e->crc_rx   = (uint8_t)(f & 0x3Fu);
-    e->crc_calc = mt6701_crc6((f >> 6) & 0x3FFFFu);
-    e->crc_ok   = ((e->crc_calc == e->crc_rx) && mt6701_frame_ok(f)) ? 1u : 0u;
-
-    if (e->crc_ok)
+    if (e->crc_ok == 0u)
     {
-        e->ok_cnt++;
-    }
-    else
-    {
-        e->err_cnt++;
-
-        /* ⚠️ CRC 不过就到此为止, 绝对不能拿这一帧的 raw 去更新角度。
-         *
-         * 原来的代码不管 CRC 结果都往下走, 后果是:
-         *   垃圾 raw -> 垃圾 rad -> 圈数判方向的差值 d 很大 ->
-         *   turns 误加/误减 1 -> total_rad 直接跳 2*pi。
-         *
-         * 而速度环的测速就是拿 total_rad 做差分的, 于是一次 CRC 错
-         * 就在转速上打出一个大尖峰 —— 表现成"转速老是突然抖一下,
-         * 但平均值其实很准"(实测均值误差 0.05%, 峰峰却有 3.9 rad/s)。
-         *
-         * 保留上一帧的角度继续用, 50us 的延迟对机械时间常数可忽略;
+        /* 重读了 MT6701_RETRY 次还是不行: 保留上一帧的角度继续用。
          * 连续错太多次由 sensory_pos_calc() 那边判故障。 */
+        e->err_cnt++;
         return 0u;
     }
+
+    e->ok_cnt++;
 
     e->angle = (float)e->raw * 360.0f / 16384.0f;
     prev_rad = e->rad;
     e->rad   = e->angle * MT6701_PI / 180.0f;
+
+    /* ---- 角度误差谐波补偿 ----
+     *
+     * 编码器磁铁装不正时, 测出来的角度会带一个和角度本身有关的误差:
+     *     rad_meas = rad_true + eps(rad_true)
+     * eps 主要是 1 次谐波 (偏心) + 2 次谐波 (充磁不均/倾斜) + 3 次谐波。
+     * 实测这颗磁铁调整完之后还剩: 1 次 1.54 度, 2 次 2.91 度, 3 次 1.33 度
+     * (机械角), 合起来约 8 度机械角 = 57 度电角度 —— 转矩要按 cos 打折,
+     * 还带明显脉动。
+     *
+     * 这里减掉预先标定好的谐波: 
+     *     rad_fix = rad + sum A_h * sin(h*rad + phi_h)
+     * 系数由上位机 tools/ecc_cal.py 标定后下发, host_ecc_en 为 0 时不补偿。
+     *
+     * 放在这里 (100Hz, 每次读编码器一次) 而不是 sensory_pos_calc (20kHz),
+     * 省掉每 50us 三次 sinf 的开销。
+     * ⚠️ 必须放在算 prev_rad / turns 之前: 这样 total_rad 也一起被修正,
+     *    测速 (拿 total_rad 差分) 才会跟着变干净。 */
+    if (host_ecc_en != 0u)
+    {
+        e->rad += host_ecc_a1 * sinf(1.0f * e->rad + host_ecc_p1)
+                + host_ecc_a2 * sinf(2.0f * e->rad + host_ecc_p2)
+                + host_ecc_a3 * sinf(3.0f * e->rad + host_ecc_p3);
+        /* 补偿量很小 (几度), 不会把角度推过 2pi, 但仍然归一化一下保险 */
+        while (e->rad < 0.0f)        { e->rad += MT6701_2PI; }
+        while (e->rad >= MT6701_2PI) { e->rad -= MT6701_2PI; }
+    }
 
     /* 圈数累加: 跨越 0/360 时判断方向 */
     if (e->first == 0u)

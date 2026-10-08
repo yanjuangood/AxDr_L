@@ -38,6 +38,26 @@ extern volatile uint8_t host_cal_request;
 /* 运动类参数 (mode/spd/iq/id/vq/vd) 被写入时置 1, 主循环看到后重新使能输出 */
 extern volatile uint8_t host_start_request;
 
+/* ---- 编码器角度误差谐波补偿 ----
+ *
+ * 编码器磁铁装不正时, 测出来的角度带一个和角度本身有关的误差:
+ *     rad_meas = rad_true + eps(rad_true)
+ * eps 主要是 1 次谐波 (偏心) + 2 次谐波 (充磁不均/倾斜) + 3 次谐波。
+ * 补偿就是减掉它:  rad_fix = rad + sum A_h * sin(h*rad + phi_h)
+ * 系数由上位机 tools/ecc_cal.py 标定后下发; host_ecc_en = 0 时不补偿。
+ *
+ * 实测这颗磁铁 (手工调到极限后) 的角度误差:
+ *     1 次 1.54 度, 2 次 2.91 度, 3 次 1.33 度 (机械角)
+ *     合起来约 8 度机械角 = 57 度电角度
+ * 补偿掉之后 FOC 的转矩脉动会明显减小。 */
+extern volatile uint32_t host_ecc_en;
+extern float host_ecc_a1;   /* 1 次谐波幅度 (rad) */
+extern float host_ecc_p1;   /* 1 次谐波相位 (rad) */
+extern float host_ecc_a2;
+extern float host_ecc_p2;
+extern float host_ecc_a3;
+extern float host_ecc_p3;
+
 /* 在 CDC_Receive_FS() 里调用: 把收到的字节喂进环形缓冲 (中断上下文, 只搬运) */
 void host_cmd_feed(const uint8_t *buf, uint32_t len);
 
