@@ -255,10 +255,14 @@ class App:
         self.alive = True        # 关窗时置 False, 停掉 after 链
         self.link = None
         self.params = {}         # name -> ParamRow
-        self.frames = []         # 波形缓冲 [(t, tuple12), ...]
+        self.frames = []         # 波形缓冲 [(t, tuple16), ...]
         self.t0 = time.time()
         self.plot_ch = list(CH_DEFAULT)
         self.ch_vars = {}
+        # 波形时间窗 (秒)。x 轴永远是"最近 N 秒", 固定住不随时间变。
+        # 不能按缓冲区长度自动缩放 —— 那样刚开时只画 1 秒 (线很稀),
+        # 后来画满 20 秒 (2000 个点挤在同样宽度里), 看起来就是"越来越密"。
+        self.plot_window = 5.0
 
         self._build_ui(port)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -321,6 +325,17 @@ class App:
             self.ch_vars[i] = v
             ttk.Checkbutton(chbar, text=str(i), variable=v,
                             command=self._ch_changed).pack(side='left')
+
+        # 时间窗选择。固定窗口才能保证线密度不变
+        ttk.Label(chbar, text='  时间窗:').pack(side='left')
+        self.win_var = tk.StringVar(value='5s')
+        cb = ttk.Combobox(chbar, textvariable=self.win_var, width=5,
+                          state='readonly',
+                          values=['0.5s', '1s', '2s', '5s', '10s', '20s'])
+        cb.pack(side='left', padx=2)
+        cb.bind('<<ComboboxSelected>>', self._win_changed)
+        self.pause_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(chbar, text='暂停', variable=self.pause_var).pack(side='left', padx=6)
 
         self.plot = tk.Canvas(right, bg='white', height=380,
                               highlightthickness=1, highlightbackground='#ccc')
@@ -460,10 +475,19 @@ class App:
         self.plot_ch = [i for i, v in self.ch_vars.items() if v.get()]
         self._draw_plot()
 
+    def _win_changed(self, _evt=None):
+        """切换波形时间窗"""
+        try:
+            self.plot_window = float(self.win_var.get().rstrip('s'))
+        except ValueError:
+            self.plot_window = 5.0
+        self.frames = self.frames[-200:]     # 缩窗时立刻丢掉多余数据
+        self._draw_plot()
+
     def _tick_plot(self):
         if not self.alive:
             return
-        if self.link is not None:
+        if self.link is not None and not self.pause_var.get():
             n = 0
             while n < 200:
                 try:
@@ -472,14 +496,14 @@ class App:
                     break
                 self.frames.append((time.time() - self.t0, fr))
                 n += 1
-            # 只留最近 20 秒
+            # 只留窗口内的数据 (多留一倍做余量, 免得刚滚出去就被切掉)
             if self.frames:
-                cut = self.frames[-1][0] - 20.0
+                cut = self.frames[-1][0] - self.plot_window * 2.0
                 while self.frames and self.frames[0][0] < cut:
                     self.frames.pop(0)
             if n:
                 self._draw_plot()
-        self.root.after(100, self._tick_plot)
+        self.root.after(50, self._tick_plot)
 
     def close(self):
         """退出前停掉 after 链和读线程, 否则 tkinter 会报
@@ -509,14 +533,22 @@ class App:
             self.legend.config(text='')
             return
 
-        tmin = self.frames[0][0]
+        # x 轴固定成"最近 plot_window 秒", 不随缓冲区长度变化。
+        # 这样线密度从头到尾一致, 而且是一直往左滚动的效果。
         tmax = self.frames[-1][0]
-        if tmax - tmin < 0.5:
-            tmax = tmin + 0.5
+        tmin = tmax - self.plot_window
+
+        # 只取窗口内的数据, 顺便抽稀: 采样点比像素多的时候每个像素画
+        # 好多个点, 既慢又看不出细节。按像素数决定步长。
+        width_px = max(1, x1 - x0)
+        pts_win = [f for f in self.frames if f[0] >= tmin]
+        if not pts_win:
+            pts_win = self.frames[-1:]
+        step = max(1, len(pts_win) // (width_px * 2))
 
         # 自动量程
         lo, hi = 1e18, -1e18
-        for _, fr in self.frames:
+        for _, fr in pts_win[::step]:
             for i in self.plot_ch:
                 v = fr[i]
                 if v < lo:
@@ -550,17 +582,16 @@ class App:
             c.create_text(xx, y1 + 8, text='%.1f' % t, fill='#888',
                           font=('Consolas', 8), anchor='n')
 
-        # 曲线
+        # 曲线 (只画窗口内的, 并按 step 抽稀, 保证渲染量和密度恒定)
         for i in self.plot_ch:
             col = PLOT_COLORS[i % len(PLOT_COLORS)]
             pts = []
-            for t, fr in self.frames:
+            for t, fr in pts_win[::step]:
                 pts.append(sx(t))
                 pts.append(sy(fr[i]))
             if len(pts) >= 4:
                 c.create_line(*pts, fill=col, width=1.4)
 
-        txt = '   '.join('%d:%s' % (i, CH_NAMES[i]) for i in self.plot_ch)
         self.legend.config(text='  '.join(
             '%d:%s' % (i, CH_NAMES[i]) for i in self.plot_ch))
 
