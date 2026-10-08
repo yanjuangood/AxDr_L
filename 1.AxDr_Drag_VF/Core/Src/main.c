@@ -87,9 +87,15 @@ uint16_t adc2_buff[4];
  *  OPENLOOP_TEST: 开环 V/f 驱动电机。上电 5 秒后自动开始,
  *                 加速到 15 rad/s (143rpm), 跑 6 秒后自动减速停机。
  *
- *  ⚠️ 两个都开的话 HWTEST_MODE 优先, 不会驱动电机。
+ *  CALIB_MODE   : 电角度零点 e_off 自动标定。**必须空载**。
+ *                 把电压矢量先后钉在 0 度和 180 度电角度上, 各等转子停稳,
+ *                 读出编码器算出 e_off, 并直接写回 pm.para.e_off。
+ *                 中间结果在 calib_e_off_a / calib_e_off_b, 两者应一致。
+ *
+ *  ⚠️ 优先级: HWTEST_MODE > CALIB_MODE > OPENLOOP_TEST, 只会跑一个。
  * ======================================================================== */
 #define HWTEST_MODE         0
+#define CALIB_MODE          0
 #define OPENLOOP_TEST       1
 
 /* USER CODE END 0 */
@@ -185,6 +191,12 @@ int main(void)
      *     2.85 V / 5.70 V / 8.55 V  (母线 11.4V)
      * 三个值明显不同就是好的。等母线起来再量 (Ctrl 里 vbus > 8V)。 */
     hwt_self_test_run();
+
+#elif CALIB_MODE
+    /* ===== 电角度零点标定 =====
+     * 必须空载! 上电后自动跑, 约 6 秒完成, 结果写回 pm.para.e_off。
+     * 用 VOFA+ 或 SWD 看 calib_e_off_a / calib_e_off_b, 两者应一致。 */
+    calib_run();
 
 #elif OPENLOOP_TEST
     /* ===== 开环 V/f 测试 =====

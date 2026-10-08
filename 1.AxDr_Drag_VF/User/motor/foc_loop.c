@@ -595,3 +595,147 @@ _RAM_FUNC void foc_vel(pmsm_t* pm, float vel_set, float iq_set, float pos)
     /* 内环: 电流环执行。id 给 0 (表贴式, 最大转矩/电流) */
     foc_curr(pm, CUR_ID_SET, pm->ctrl.iq_set, pos);
 }
+
+/* ===========================================================================
+ *  电角度零点 e_off 自动标定 (calib_run)
+ *
+ *  原理: sensory_pos_calc() 里是
+ *            p_e = mt6701.rad * pn + e_off
+ *        p_e 就是电流环用的电角度。反过来只要把电压矢量钉在一个已知的
+ *        电角度 CALIB_ANG 上, 转子会被吸到那个方向并停住, 这时读编码器
+ *        就能解出 e_off:
+ *            e_off = CALIB_ANG - (机械角 * pn)
+ *
+ *  为什么用 total_rad 而不是 rad:
+ *        代码里 p_e 用的是 rad (0~2pi, 会跳变), 直接对 rad 取平均在过零点
+ *        会算出垃圾。而 pn 是整数, (total_rad - rad) 一定是 2*pi 的整数倍,
+ *        乘 pn 之后模 2*pi 完全一样 —— 所以用 total_rad 算, 结果等价且不跳变。
+ *
+ *  为什么要锁两个相差 180 度电角度的位置:
+ *        两次算出来的 e_off 必须一致。差得多就说明转子没稳定、有负载、
+ *        或者编码器/相序有问题 —— 这时候标定结果不能用。
+ *
+ *  ⚠️ 标定必须空载。轴上有负载会把转子拖偏, 标出来的角是错的。
+ * =========================================================================== */
+#define CALIB_TS        0.01f               /* 主循环周期 (秒) */
+#define CALIB_V         2.0f                /* 标定电压 (V): 2V/3.1Ω=0.65A, 短时安全 */
+#define CALIB_SETTLE_S  2.0f                /* 每个角度等转子稳定的时间 */
+#define CALIB_AVG_S     0.8f                /* 取平均的时间 */
+#define CALIB_ANG_A     0.0f                /* 第一次锁的电角度 */
+#define CALIB_ANG_B     3.14159265358979f   /* 第二次, 相差 180 度电角度 */
+
+enum
+{
+    CALIB_IDLE = 0,
+    CALIB_A_SETTLE,
+    CALIB_A_MEAS,
+    CALIB_B_SETTLE,
+    CALIB_B_MEAS,
+    CALIB_DONE
+};
+
+/* 全部用 volatile 且非 static, 方便 gdb/openocd 直接读结果 */
+volatile uint8_t calib_step    = CALIB_IDLE;
+volatile float   calib_rad_a   = 0.0f;  /* 锁 A 角时测到的机械角 (rad) */
+volatile float   calib_rad_b   = 0.0f;  /* 锁 B 角时测到的机械角 (rad) */
+volatile float   calib_e_off_a = 0.0f;  /* 由 A 算出的 e_off */
+volatile float   calib_e_off_b = 0.0f;  /* 由 B 算出的 e_off */
+volatile float   calib_e_off   = 0.0f;  /* 最终采用的 e_off */
+
+static float calib_t       = 0.0f;
+static float calib_rad_beg = 0.0f;
+
+/* 归一化到 [0, 2*pi) */
+static float calib_wrap(float x)
+{
+    while (x < 0.0f)   { x += M_2PI; }
+    while (x >= M_2PI) { x -= M_2PI; }
+    return x;
+}
+
+/**
+***********************************************************************
+* @brief:      calib_run(void)
+* @param[in]:  void
+* @retval:     void
+* @details:    电角度零点自动标定, 主循环 100Hz 调用。标定完自动写回 pm.para.e_off
+***********************************************************************
+**/
+void calib_run(void)
+{
+    /* 母线没起来就别动 —— 上电后 12V 要一点时间才稳 */
+    if (pm.foc.vbus < 8.0f)
+    {
+        return;
+    }
+
+    /* 必须先走 V/f 分支, 再把 ctrl_bit 打到 opera, 状态机会自动开 PWM */
+    pm.foc.mode    = foc_volt_mode;
+    pm.ctrl.vd_set = 0.0f;
+    pm.ctrl.wr_set = 0.0f;      /* wr=0 -> 中断里 pos_acc=0, drag_pe 不会被累加 */
+    pm.ctrl_bit    = opera;
+
+    switch (calib_step)
+    {
+    case CALIB_IDLE:                        /* 第一次进来, 开跑 */
+        calib_t    = 0.0f;
+        calib_step = CALIB_A_SETTLE;
+        break;
+
+    case CALIB_A_SETTLE:                    /* 锁 A 角, 等转子被吸住 */
+        pm.ctrl.vq_set  = CALIB_V;
+        pm.ctrl.drag_pe = CALIB_ANG_A;
+        calib_t += CALIB_TS;
+        if (calib_t >= CALIB_SETTLE_S)
+        {
+            calib_t       = 0.0f;
+            calib_rad_beg = mt6701.total_rad;
+            calib_step    = CALIB_A_MEAS;
+        }
+        break;
+
+    case CALIB_A_MEAS:                      /* 转子已停, 取平均 */
+        pm.ctrl.vq_set  = CALIB_V;
+        pm.ctrl.drag_pe = CALIB_ANG_A;
+        calib_t += CALIB_TS;
+        if (calib_t >= CALIB_AVG_S)
+        {
+            calib_rad_a   = 0.5f * (calib_rad_beg + mt6701.total_rad);
+            calib_e_off_a = calib_wrap(CALIB_ANG_A - calib_rad_a * pm.para.pn);
+            calib_t       = 0.0f;
+            calib_step    = CALIB_B_SETTLE;
+        }
+        break;
+
+    case CALIB_B_SETTLE:                    /* 换到 B 角 (相差 180 度电角度) */
+        pm.ctrl.vq_set  = CALIB_V;
+        pm.ctrl.drag_pe = CALIB_ANG_B;
+        calib_t += CALIB_TS;
+        if (calib_t >= CALIB_SETTLE_S)
+        {
+            calib_t       = 0.0f;
+            calib_rad_beg = mt6701.total_rad;
+            calib_step    = CALIB_B_MEAS;
+        }
+        break;
+
+    case CALIB_B_MEAS:
+        pm.ctrl.vq_set  = CALIB_V;
+        pm.ctrl.drag_pe = CALIB_ANG_B;
+        calib_t += CALIB_TS;
+        if (calib_t >= CALIB_AVG_S)
+        {
+            calib_rad_b   = 0.5f * (calib_rad_beg + mt6701.total_rad);
+            calib_e_off_b = calib_wrap(CALIB_ANG_B - calib_rad_b * pm.para.pn);
+            calib_e_off   = calib_e_off_a;          /* 采用 A 的结果 */
+            pm.para.e_off = calib_e_off;            /* 直接生效, 不用手抄 */
+            calib_step    = CALIB_DONE;
+        }
+        break;
+
+    case CALIB_DONE:
+    default:
+        pm.ctrl_bit = reset;    /* 标定完立刻关输出, 别再加热电机 */
+        break;
+    }
+}

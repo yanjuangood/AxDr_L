@@ -1569,6 +1569,10 @@ void openloop_test_run(void);
  * 期望 2.85 / 5.70 / 8.55 V (母线 11.4V)。实现见 foc_loop.c */
 void hwt_self_test_run(void);
 
+/* 电角度零点 e_off 自动标定。上电后自动跑, 标定完写回 pm.para.e_off。
+ * 中间结果在 calib_e_off_a / calib_e_off_b 里, 两者应一致。实现见 foc_loop.c */
+void calib_run(void);
+
 void sensory_pos_calc(pmsm_t* pm);
 void senless_pos_calc(pmsm_t* pm);
 void pos_calc(pmsm_t* pm);
