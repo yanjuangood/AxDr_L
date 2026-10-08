@@ -66,3 +66,7 @@ dsh-acl-recovery/
 
 # ---------- 烧录脚本产物 ----------
 *.hex.bak
+
+# Python
+__pycache__/
+*.pyc
