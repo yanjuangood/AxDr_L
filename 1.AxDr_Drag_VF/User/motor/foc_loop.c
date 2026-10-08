@@ -39,12 +39,12 @@ volatile uint8_t enc_volt_en = 0u;
 #define SPD_LOOP_BW_HZ      100.0f
 
 /* ---- 转速测量 (spd_measure_update) ---- */
-#define SPD_TS              0.01f   /* 主循环周期, 和 main.c 的 HAL_Delay(10) 对应 */
-/* 测速滑动窗口长度 (主循环周期数)。80ms 是为了跨过多个齿槽周期,
- * 把 107Hz 齿槽混叠出来的假信号平均掉。详见 spd_measure_update() 的说明 */
-#define SPD_AVG_N           8u
-/* 一阶低通系数。a = dt/(dt+tau), tau = 1/(2*pi*fc)。
- * 窗口平均之后残留的噪声已经不多, 这里只做轻度平滑 */
+/* 测速窗口长度 (毫秒)。80ms 是为了跨过多个齿槽周期 ——
+ * 12N14P 齿槽 84 步/圈, 8 rad/s 时齿槽频率 107Hz, 而主循环只有 100Hz,
+ * 不平均掉的话 107Hz 会被混叠成低频假信号, 速度环把假信号当真波动去纠正,
+ * 反而放大真实波动。 */
+#define SPD_WIN_MS          80u
+/* 一阶低通系数。窗口平均之后残留的噪声已经不多, 这里只做轻度平滑 */
 #define SPD_LPF_A           0.65f
 
 /**
@@ -263,41 +263,52 @@ volatile float spd_wr_meas = 0.0f;
 **/
 void spd_measure_update(void)
 {
-    /* 滑动窗口: 存最近 SPD_AVG_N+1 个 total_rad, 用首尾差算平均速度。
+    /* 时间触发的固定窗口测速。
      *
-     * 为什么不能用单周期差分:
-     *   12N14P 的齿槽是 84 步/圈。8 rad/s 时齿槽频率 84*8/(2pi) = 107Hz,
-     *   而这里只有 100Hz 采样 —— 107Hz 会被混叠成一个低频假信号。
-     *   速度环把这个假信号当成真波动去纠正, 反而把真实的波动放大了
-     *   (实测转速峰峰值有 4 rad/s, 占给定的一半)。
+     * ⚠️ 为什么窗口要用【真实毫秒】而不是【多少个主循环周期】:
      *
-     *   80ms 窗口 = 8 个主循环周期, 在 8 rad/s 下跨过约 8.5 个齿槽周期,
-     *   齿槽被平均掉, 代价是多了约 40ms 滞后 —— 对十几 Hz 的速度环可以接受。
-     */
-    static float   s_hist[SPD_AVG_N + 1u];
-    static uint8_t s_idx = 0u;
-    static uint8_t s_cnt = 0u;
-    float drad;
-    float raw;
+     *   主循环标称 100Hz (HAL_Delay(10)), 但里面还有 VOFA 发送(阻塞串口)、
+     *   温度计算、上位机命令处理。上位机每 3 秒发一次 GET?, 回复将近
+     *   900 字节, 主循环会明显卡顿一下 —— 周期根本不是恒定的 10ms。
+     *
+     *   原来写成 转速 = 角度差 / (8 * 0.01), 分母是写死的。周期一变长,
+     *   算出来的转速就偏低(或偏高), 速度环追着这个假数据跑, 表现成
+     *   转速在 0 和 ~10 rad/s 之间蹦, 而且给定 3/6/8/12 时最小值都是 ~0、
+     *   最大值都是 ~10, 只有均值随给定变 —— 像在"靠占空比凑平均转速"。
+     *
+     *   改成用 HAL_GetTick() 量真实间隔, 分母就永远是对的。
+     *
+     * 窗口取 SPD_WIN_MS(80ms): 12N14P 齿槽 84 步/圈, 8 rad/s 时齿槽频率
+     * 107Hz, 主循环只有 100Hz, 不平均掉的话会被混叠成低频假信号。
+     * 80ms 跨过约 8.5 个齿槽周期, 代价是约 40ms 滞后。 */
+    static float    s_prev_rad  = 0.0f;
+    static uint32_t s_prev_tick = 0u;
+    static uint8_t  s_first     = 1u;
+    uint32_t now;
+    uint32_t dt_ms;
+    float    raw;
 
-    s_hist[s_idx] = mt6701.total_rad;
-    s_idx = (uint8_t)((s_idx + 1u) % (SPD_AVG_N + 1u));
+    now = HAL_GetTick();
 
-    if (s_cnt <= SPD_AVG_N)
+    if (s_first != 0u)
     {
-        s_cnt++;
+        s_prev_rad  = mt6701.total_rad;
+        s_prev_tick = now;
+        s_first     = 0u;
+        return;
     }
-    if (s_cnt <= SPD_AVG_N)
+
+    dt_ms = now - s_prev_tick;
+    if (dt_ms < SPD_WIN_MS)
     {
-        return;             /* 还没攒满一个窗口 */
+        return;             /* 窗口还没满 */
     }
 
-    /* s_hist[s_idx] 是最旧的一个, s_hist[(s_idx+SPD_AVG_N)%(N+1)] 是最新的 */
-    drad = s_hist[(uint8_t)((s_idx + SPD_AVG_N) % (SPD_AVG_N + 1u))] - s_hist[s_idx];
+    raw = (mt6701.total_rad - s_prev_rad) * 1000.0f / (float)dt_ms;
 
-    raw = drad / (SPD_AVG_N * SPD_TS);
+    s_prev_rad  = mt6701.total_rad;
+    s_prev_tick = now;
 
-    /* 再轻量低通一次, 压掉窗口边界的跳变 */
     spd_wr_meas += SPD_LPF_A * (raw - spd_wr_meas);
 }
 
