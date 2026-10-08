@@ -771,6 +771,27 @@ _RAM_FUNC void foc_vel(pmsm_t* pm, float vel_set, float iq_set, float pos)
 #define CALIB_ANG_A     0.0f                /* 第一次锁的电角度 */
 #define CALIB_ANG_B     3.14159265358979f   /* 第二次, 相差 180 度电角度 */
 
+/* v_q 产生的电压矢量在空间上比给定角度超前 90 度。
+ *
+ * inverse_park 里 (v_d=0, v_q=V):
+ *      v_alph = -V*sin(theta)
+ *      v_beta = +V*cos(theta)
+ * 这个矢量的方向是 theta + 90 度, 所以转子 d 轴最终停在 CALIB_ANG+90 度,
+ * 而不是 CALIB_ANG。标定公式必须把这个 90 度算进去。
+ *
+ * 当初就是漏了它, 导致标出来的 e_off 差 90 度电角度, 转矩按 cos(90)=0 打折 ——
+ * 电流环工作得完美, 电机却纹丝不动。 */
+#define CALIB_VQ_PHASE  1.57079632679490f   /* pi/2 */
+
+/* 标定公式 (必须和 sensory_pos_calc 的用法严格互逆):
+ *
+ *      sensory_pos_calc:  p_e = ENC_DIR * (rad * pn) + e_off
+ *      锁定转子时希望:     p_e = CALIB_ANG + pi/2
+ *      =>           e_off = CALIB_ANG + pi/2 - ENC_DIR * (rad * pn)
+ *
+ * ⚠️ 改 ENC_DIR 或改 sensory_pos_calc 的公式之后, 这里必须同步改,
+ *    否则按 CAL 会算出错的 e_off, 把本来能跑的电机搞得不转。 */
+
 enum
 {
     CALIB_IDLE = 0,
@@ -855,7 +876,8 @@ void calib_run(void)
         if (calib_t >= CALIB_AVG_S)
         {
             calib_rad_a   = 0.5f * (calib_rad_beg + mt6701.total_rad);
-            calib_e_off_a = calib_wrap(CALIB_ANG_A - calib_rad_a * pm.para.pn);
+            calib_e_off_a = calib_wrap(CALIB_ANG_A + CALIB_VQ_PHASE
+                                       - host_enc_dir * (calib_rad_a * pm.para.pn));
             calib_t       = 0.0f;
             calib_step    = CALIB_B_SETTLE;
         }
@@ -880,7 +902,8 @@ void calib_run(void)
         if (calib_t >= CALIB_AVG_S)
         {
             calib_rad_b   = 0.5f * (calib_rad_beg + mt6701.total_rad);
-            calib_e_off_b = calib_wrap(CALIB_ANG_B - calib_rad_b * pm.para.pn);
+            calib_e_off_b = calib_wrap(CALIB_ANG_B + CALIB_VQ_PHASE
+                                       - host_enc_dir * (calib_rad_b * pm.para.pn));
             calib_e_off   = calib_e_off_a;          /* 采用 A 的结果 */
             pm.para.e_off = calib_e_off;            /* 直接生效, 不用手抄 */
             calib_step    = CALIB_DONE;
