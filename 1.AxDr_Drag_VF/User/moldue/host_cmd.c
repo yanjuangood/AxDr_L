@@ -299,6 +299,7 @@ static void hc_exec_impl(char *line)
     if (strcmp(cmd, "RST") == 0)
     {
         pmsm_reset(&pm);
+        host_start_request = 1u;    /* 清完故障顺手重新使能, 免得再点一次 START */
         hc_line("OK RST");
         return;
     }

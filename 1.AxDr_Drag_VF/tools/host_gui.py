@@ -341,10 +341,14 @@ class App:
             self.root.after(150, self._apply_speed)
 
     def _on_run(self):
-        """运行 = 先下发一次速度给定 (会自动重新使能输出), 再 START"""
-        self.send('mode %d' % self.mode_var.get())
-        self.send('spd %.3f' % self.spd_var.get())
-        self.root.after(120, lambda: self.send('START'))
+        """运行 = 清故障 -> 下发模式 -> 下发速度 -> START
+
+        先清故障很重要: 上一轮如果跳了过流, ctrl_bit 会被打到 reset 并且
+        故障是闭锁的, 这时发什么命令都不会动 —— 用户只会觉得"命令没用"。"""
+        self.send('RST')
+        self.root.after(80, lambda: self.send('mode %d' % self.mode_var.get()))
+        self.root.after(160, lambda: self.send('spd %.3f' % self.spd_var.get()))
+        self.root.after(240, lambda: self.send('START'))
 
     def _on_stop(self):
         self.send('spd 0')
@@ -597,9 +601,12 @@ class App:
                 # 顶部实时读数直接取遥测流的最新一帧 (60~100Hz),
                 # 比走 GET? (3 秒一次) 快得多
                 fr = self.frames[-1][1]
+                flt = int(fr[4])
                 self.lbl_live.config(
-                    text='实测 %7.2f rad/s   iq %+6.3f A   母线 %5.2f V   故障 %d'
-                         % (fr[12], fr[9], fr[2], int(fr[4])))
+                    text='实测 %7.2f rad/s   iq %+6.3f A   母线 %5.2f V   故障 %d%s'
+                         % (fr[12], fr[9], fr[2], flt,
+                            '' if flt == 0 else '  <- 点「清故障」'),
+                    foreground='#06c' if flt == 0 else '#c00')
         self.root.after(50, self._tick_plot)
 
     def close(self):

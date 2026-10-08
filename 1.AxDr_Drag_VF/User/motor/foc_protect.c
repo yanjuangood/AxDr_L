@@ -32,16 +32,24 @@
 #define PROT_OV_VALUE       18.0f
 
 /* 过流 (A)。三相电流取绝对值后的最大值。
- * 2804: 额定 0.5A, 堵转 1.8A。门限取 1.5A —— 高于额定三倍, 低于堵转 */
-#define PROT_OC_VALUE       1.5f
+ * 2804: 额定 0.5A, 堵转 1.8A。
+ * 门限取 2.0A —— 略高于堵转电流。取 1.5A 的话正常加速时的电流环超调
+ * 就能碰到它, 变成"跑着跑着突然停机, 故障 1"。 */
+#define PROT_OC_VALUE       2.0f
 
-/* 过流硬限倍数: 超过 oc_value * 该值立刻跳闸, 不去抖 */
-#define PROT_OC_HARD_RATIO  2.0f
+/* 过流硬限倍数: 超过 oc_value * 该值跳闸。
+ * ⚠️ 这条也必须去抖, 不能"一超就跳"。
+ *    电流是每个 PWM 周期只采一个瞬时点 (TIM1_CC4 触发注入通道),
+ *    采样点落在开关瞬间时读数就是垃圾, 很容易蹦出一个假的高值。
+ *    原来硬限完全不判次数 -> 一个噪声尖峰就把电机关了, 还是永久闭锁的,
+ *    表现成"发命令没反应", 得手动清故障。 */
+#define PROT_OC_HARD_RATIO  2.0f    /* 硬限 = 4.0A */
 
 /* 去抖计数 (ISR 20kHz -> 1 计数 = 50us) */
 #define PROT_UV_CNT         200u    /* 10 ms  */
 #define PROT_OV_CNT         200u    /* 10 ms  */
-#define PROT_OC_CNT         5u      /* 250 us */
+#define PROT_OC_CNT         20u     /* 1 ms  — 软阈值 */
+#define PROT_OC_HARD_CNT    4u      /* 200us — 硬阈值, 快但仍能滤掉单个尖峰 */
 #define PROT_OT_CNT         2000u   /* 100 ms */
 #define PROT_OMT_CNT        2000u   /* 100 ms */
 
@@ -238,8 +246,18 @@ void pmsm_fault_check(pmsm_t* pm)
 
         if (i_peak > (pm->protect.oc_value * PROT_OC_HARD_RATIO))
         {
-            /* 硬限: 立刻跳闸, 不去抖 */
-            pm->fault.bit.ov_curr = 1u;
+            /* 硬限: 仍然要连续几次才跳, 见 PROT_OC_HARD_RATIO 的说明 */
+            static uint8_t oc_hard_cnt = 0u;
+
+            if (oc_hard_cnt < PROT_OC_HARD_CNT)
+            {
+                oc_hard_cnt++;
+            }
+            else
+            {
+                pm->fault.bit.ov_curr = 1u;
+            }
+            pm->protect.oc_cnt = 0u;
         }
         else if (i_peak > pm->protect.oc_value)
         {
