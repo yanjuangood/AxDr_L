@@ -4,17 +4,11 @@
   * @brief   PID 控制器库 —— 实现 common.h 中声明的 PID 接口
   *
   *  设计说明:
-  *    1. 并联式 PI(D):  out = kp*e + ki*Σe + kd*Δe
-  *       - ki 是「每个采样周期累加 ki*e」的离散增益, 不是连续域的 Ki
-  *       - 电流环 ts = 50us (20kHz), 速度环 ts = 100us (10kHz)
-  *
-  *    2. 抗积分饱和 (anti-windup) 是这里的重点:
-  *       - parallel_pid_ctrl : 积分项单独限幅, 简单可靠, 够用
-  *       - serial_pid_ctrl   : 条件积分 —— 输出饱和且误差还在往同方向推时,
-  *                             撤销本次积分。比单纯限幅更不容易「退饱和慢」
-  *       只限输出不限积分是错的, 会导致退饱和时严重超调。
-  *
-  *    3. 微分项 kd=0 时完全跳过计算, 20kHz 下能省一点时间
+ *  和桌面工程 1.AxDr_Drag_VF 里编出来的 pid.o 同一套:
+ *    serial_pid_ctrl :  i += ki * (kp*e) * ts,  输出 kp*e + i
+ *    parallel_pid_ctrl: i += ki * e * ts, 积分上限是输出还剩的空间
+ *    pdff_ctrl        : 比例用 kfp*参考 - kf_damp*反馈, 积分和 parallel 一样
+ *  ki 是连续域增益, 函数内部乘 ts。限幅用 i_term_min/max 和 out_min/max。
   ******************************************************************************
   */
 #include "common.h"
@@ -148,36 +142,33 @@ void pid_reset(pid_para_t* pid, float kp, float ki, float kd)
 * @param[in]:  ref    参考值
 * @param[in]:  fback  反馈值
 * @retval:     float  控制器输出 (已限幅)
-* @details:    并联式 PI(D)。积分项每周期累加后单独限幅, 实现抗积分饱和
+* @details:    并联 PI。积分按 ki*误差*ts 累加。
+*              积分上下限每拍改成「输出限幅减去比例项」, 负数一侧夹到 0,
+*              这样比例已经顶满时积分不再往同方向加。
 ***********************************************************************
 **/
-float parallel_pid_ctrl(pid_para_t* pid, float ref, float fback)
+_RAM_FUNC float parallel_pid_ctrl(pid_para_t* pid, float ref, float fback)
 {
+    float room;
+
     pid->ref_value = ref;
     pid->fback_value = fback;
     pid->error = ref - fback;
 
-    /* 比例项 */
     pid->p_term = pid->kp * pid->error;
-
-    /* 积分项: 先累加再限幅 -> 积分饱和被夹住 */
-    pid->i_term += pid->ki * pid->error;
-    pid->i_term = sat1_datf(pid->i_term, pid->i_term_max, pid->i_term_min);
-
-    /* 微分项: kd=0 时跳过 */
-    if (pid->kd != 0.0f)
-    {
-        pid->d_term = pid->kd * (pid->error - pid->pre_err);
-    }
-    else
-    {
-        pid->d_term = 0.0f;
-    }
+    pid->d_term = pid->kd * (pid->error - pid->pre_err);
     pid->pre_err = pid->error;
 
-    pid->out_value = sat1_datf(pid->p_term + pid->i_term + pid->d_term,
-                               pid->out_max, pid->out_min);
+    room = pid->out_max - pid->p_term;
+    pid->i_term_max = (room > 0.0f) ? room : 0.0f;
+    room = pid->out_min - pid->p_term;
+    pid->i_term_min = (room < 0.0f) ? room : 0.0f;
 
+    pid->i_term += pid->ki * pid->error * pid->ts;
+    pid->i_term = sat1_datf(pid->i_term, pid->i_term_max, pid->i_term_min);
+
+    pid->out_value = pid->p_term + pid->i_term + pid->d_term;
+    pid->out_value = sat1_datf(pid->out_value, pid->out_max, pid->out_min);
     return pid->out_value;
 }
 
@@ -188,49 +179,24 @@ float parallel_pid_ctrl(pid_para_t* pid, float ref, float fback)
 * @param[in]:  ref    参考值
 * @param[in]:  fback  反馈值
 * @retval:     float  控制器输出 (已限幅)
-* @details:    串级式 PI(D) + 条件积分抗饱和。
-*              当输出已饱和、且误差还在把输出往同一个方向推时, 撤销本次积分,
-*              避免积分越攒越多导致的退饱和超调
+* @details:    串联 PI, 和桌面工程 pid.o 里的 serial_pid_ctrl 一致。
+*              p = kp * e
+*              i += ki * p * ts
+*              输出 = p + i, 积分和输出各自限幅。没有微分。
 ***********************************************************************
 **/
-float serial_pid_ctrl(pid_para_t* pid, float ref, float fback)
+_RAM_FUNC float serial_pid_ctrl(pid_para_t* pid, float ref, float fback)
 {
-    float out;
-
     pid->ref_value = ref;
     pid->fback_value = fback;
     pid->error = ref - fback;
 
-    /* 积分项限幅, 再累加 */
-    pid->i_term = sat1_datf(pid->i_term, pid->i_term_max, pid->i_term_min);
-    pid->i_term += pid->ki * pid->error;
-
-    /* 比例项 */
     pid->p_term = pid->kp * pid->error;
+    pid->i_term += pid->ki * pid->p_term * pid->ts;
+    pid->i_term = sat1_datf(pid->i_term, pid->i_term_max, pid->i_term_min);
 
-    /* 微分项: kd=0 时跳过 */
-    if (pid->kd != 0.0f)
-    {
-        pid->d_term = pid->kd * (pid->error - pid->pre_err);
-    }
-    else
-    {
-        pid->d_term = 0.0f;
-    }
-    pid->pre_err = pid->error;
-
-    out = pid->p_term + pid->i_term + pid->d_term;
-
-    /* 条件积分: 输出饱和且误差同向 -> 撤销本次积分 */
-    if (((out > pid->out_max) && (pid->error > 0.0f)) ||
-        ((out < pid->out_min) && (pid->error < 0.0f)))
-    {
-        pid->i_term -= pid->ki * pid->error;
-        out = pid->p_term + pid->i_term + pid->d_term;
-    }
-
-    pid->out_value = sat1_datf(out, pid->out_max, pid->out_min);
-
+    pid->out_value = pid->p_term + pid->i_term;
+    pid->out_value = sat1_datf(pid->out_value, pid->out_max, pid->out_min);
     return pid->out_value;
 }
 
@@ -265,37 +231,31 @@ float serial_pid_ctrl1(pid_para_t* pid, float ref, float fback, float i_max, flo
 * @param[in]:  ref    参考值
 * @param[in]:  fback  反馈值
 * @retval:     float  控制器输出 (已限幅)
-* @details:    伪微分反馈前馈。微分作用在反馈上，参考值阶跃时不会产生微分冲击。
-*              适合速度环这种参考会突变的场合。
-*              注意: 这里 pre_err 存的是上一次的反馈值, 不是误差
+* @details:    比例作用在 kfp*参考 - kf_damp*反馈 上, 积分仍按误差累加。
+*              积分限幅方式和 parallel_pid_ctrl 相同。
 ***********************************************************************
 **/
-float pdff_ctrl(pid_para_t* pid, float ref, float fback)
+_RAM_FUNC float pdff_ctrl(pid_para_t* pid, float ref, float fback)
 {
+    float room;
+
     pid->ref_value = ref;
     pid->fback_value = fback;
     pid->error = ref - fback;
+    pid->p_term = pid->kp * (pid->kfp * ref - pid->kf_damp * fback);
 
-    /* 比例项 */
-    pid->p_term = pid->kp * pid->error;
+    room = pid->out_max - pid->p_term;
+    pid->i_term_max = (room > 0.0f) ? room : 0.0f;
+    room = pid->out_min - pid->p_term;
+    pid->i_term_min = (room < 0.0f) ? room : 0.0f;
 
-    /* 积分项: 累加后限幅 */
-    pid->i_term += pid->ki * pid->error;
+    pid->i_term += pid->ki * pid->error * pid->ts;
     pid->i_term = sat1_datf(pid->i_term, pid->i_term_max, pid->i_term_min);
 
-    /* 微分项: 对反馈求差分, 而不是对误差 */
-    if (pid->kd != 0.0f)
-    {
-        pid->d_term = -pid->kd * (fback - pid->pre_err);
-    }
-    else
-    {
-        pid->d_term = 0.0f;
-    }
-    pid->pre_err = fback;
+    pid->d_term = pid->kd * (pid->error - pid->pre_err);
+    pid->pre_err = pid->error;
 
-    pid->out_value = sat1_datf(pid->p_term + pid->i_term + pid->d_term,
-                               pid->out_max, pid->out_min);
-
+    pid->out_value = pid->p_term + pid->i_term + pid->d_term;
+    pid->out_value = sat1_datf(pid->out_value, pid->out_max, pid->out_min);
     return pid->out_value;
 }

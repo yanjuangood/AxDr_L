@@ -34,7 +34,7 @@ import math
 import struct
 
 PORT = r'\\.\COM12'
-NCH = 16
+NCH = 18
 TAIL = b'\x00\x00\x80\x7f'
 FRAME = NCH * 4 + 4
 

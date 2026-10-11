@@ -3,20 +3,18 @@
   * @file    foc_loop.c
   * @brief   闭环控制 —— 电流环 PI、速度环 PI、位置计算
   *
-  *  串级结构:
-  *      位置环 (5kHz)  ->  速度环 (10kHz)  ->  电流环 (20kHz)  ->  SVPWM
-  *                                              ^^^^^^ 本文件的核心
-  *
-  *  电流环 (foc_cur_pi_calc / foc_curr):
-  *      1. 三相电流 -> Clarke -> Park -> i_d / i_q
-  *      2. i_d / i_q 各自一个 PI -> v_d / v_q
-  *      3. v_d / v_q -> 逆 Park -> SVPWM
-  *
-  *  PI 参数用「带宽整定」算, 不靠试凑:
-  *      被控对象近似为 1/(Ls*s + Rs)
-  *      Kp = wc * L,   Ki = wc * R * Ts
-  *      wc = 2*pi*ibw,  ibw 取 pm.para.ibw (默认 1000Hz)
-  *  这样改电机参数 (Ld/Lq/Rs) 后增益会自动跟着变, 不用重调。
+ *  电流环、速度环走桌面工程 1.AxDr_Drag_VF 的 serial_pid_ctrl:
+ *      p = kp * 误差
+ *      i += ki * p * ts
+ *      输出 = p + i, 积分和输出都限幅
+ *  电流环每个 PWM 周期算一次 (20 kHz, cur_pid_ts)。
+ *  速度环在测速更新时算, 大约 10ms 一次, 不用 10kHz。
+ *  这台转子惯量很小, 1A 持续一个测速窗口就会冲过几十 rad/s。
+ *  位置环按 pos_pid_cnt_val 分频, 初始化是 5 kHz, 输出交给速度环。
+ *
+ *  电流环增益: kp = L*wc, ki = R/L, wc = 2*pi*ibw。
+ *  这样串起来就是 kp*e + 积分(R*wc*e), 零点和电机极点 R/L 对上。
+ *  电压限幅用 foc.vs (母线 * 0.5 * 0.96), 和 foc_para_calc() 一样。
   *
   *  ⚠️ 前置条件: 板上 U14 (TLV9001, VREF 缓冲) 必须焊上。
   *     没焊的话四路电流全无效, pmsm_protect_init() 会置 ioff_err 把 PWM 拉停,
@@ -34,18 +32,15 @@ volatile uint8_t enc_volt_en = 0u;
 /* d 轴电流给定: 表贴式永磁电机用 id=0 控制 (最大转矩/电流) */
 #define CUR_ID_SET          0.0f
 
-/* 速度环带宽 (Hz), 一般取电流环带宽的 1/5 ~ 1/10。
- * 现在主要用 host_spd_bw 这个运行时变量, 这个宏只作后备。 */
-#define SPD_LOOP_BW_HZ      100.0f
-
 /* ---- 转速测量 (spd_measure_update) ---- */
-/* 测速窗口长度 (毫秒)。80ms 是为了跨过多个齿槽周期 ——
- * 12N14P 齿槽 84 步/圈, 8 rad/s 时齿槽频率 107Hz, 而主循环只有 100Hz,
- * 不平均掉的话 107Hz 会被混叠成低频假信号, 速度环把假信号当真波动去纠正,
- * 反而放大真实波动。 */
-#define SPD_WIN_MS          80u
-/* 一阶低通系数。窗口平均之后残留的噪声已经不多, 这里只做轻度平滑 */
-#define SPD_LPF_A           0.65f
+/* 测速窗口 (毫秒)。编码器主循环连续读, 4ms 一拍, 速度环跟这一拍走。
+ * 不能再用 10ms: 这台转子 0.25A 持续 10ms 转速就会变十几个 rad/s, 给定只有 10。 */
+#define SPD_WIN_MS          4u
+/* 一阶低通。窗口短了, 系数取小, 一拍尖峰不会整段灌进去。 */
+#define SPD_LPF_A           0.2f
+/* 这一拍允许的转速跳变 (rad/s)。1A 时 4ms 大约只变 26 rad/s。
+ * 编码器圈数误判会让 total_rad 跳 2π, 差分出来是几百 rad/s, 直接丢掉。 */
+#define SPD_GLITCH          40.0f
 
 /**
 ***********************************************************************
@@ -79,7 +74,8 @@ volatile uint8_t enc_volt_en = 0u;
  * 100 次 @100Hz = 1 秒, 真是断线的话 1 秒内也会被发现。 */
 #define MT6701_ERR_MAX      100u
 
-static uint16_t s_enc_err_run = 0u;     /* 连续 CRC 失败计数 */
+static uint16_t s_enc_err_run  = 0u;    /* 连续失败的读取次数，不是中断次数 */
+static uint8_t  s_enc_seen_bad = 0u;    /* 这一次失败已经计过数 */
 
 void sensory_pos_calc(pmsm_t* pm)
 {
@@ -94,9 +90,15 @@ void sensory_pos_calc(pmsm_t* pm)
      *    (50us 的延迟对机械时间常数可以忽略)。 */
     if (mt6701.crc_ok == 0u)
     {
-        if (s_enc_err_run < MT6701_ERR_MAX)
+        /* crc_ok 只在主循环读编码器时才变。这里 20kHz 会进来，
+         * 同一次失败不能按中断次数累加，否则大约 5ms 就误报编码器故障。 */
+        if (s_enc_seen_bad == 0u)
         {
-            s_enc_err_run++;
+            s_enc_seen_bad = 1u;
+            if (s_enc_err_run < MT6701_ERR_MAX)
+            {
+                s_enc_err_run++;
+            }
         }
         if (s_enc_err_run >= MT6701_ERR_MAX)
         {
@@ -105,9 +107,10 @@ void sensory_pos_calc(pmsm_t* pm)
         return;
     }
 
-    /* 这一帧是好的: 清计数, 顺便解除之前的编码器故障 */
-    s_enc_err_run        = 0u;
-    pm->fault.bit.enc_err = 0u;
+    /* 这一帧是好的: 清计数。故障位在 mt6701_read() 里解除，
+     * 停机时这里不会被调用，不能只在这里清。 */
+    s_enc_seen_bad = 0u;
+    s_enc_err_run  = 0u;
 
     /* 机械角 (rad, 0~2pi) * 极对数 + 电角度零点偏移 = 电角度
      * 用 mt6701.rad 而不是 total_rad: rad 被限制在 0~2pi, 浮点精度更好,
@@ -120,50 +123,53 @@ void sensory_pos_calc(pmsm_t* pm)
 
 /**
 ***********************************************************************
-* @brief:      foc_cur_pi_tune(pmsm_t* pm)
-* @param[in]:  pm  指向 PMSM 控制结构体的指针
-* @retval:     void
-* @details:    按带宽整定电流环 PI 增益: Kp = wc*L, Ki = wc*R*Ts
-* @note        直接写 kp/ki, 不调用 pid_reset —— pid_reset 会清掉积分项,
-*              在 20kHz 里每周期清一次积分等于没有积分
+* @brief:      pid_axis_prepare(pid_para_t* pi, float kp, float ki, float ts, float lim)
+* @details:    写入串联 PI 的增益、周期和对称限幅, 不动积分。
 ***********************************************************************
 **/
-static void foc_cur_pi_tune(pmsm_t* pm)
+_RAM_FUNC static void pid_axis_prepare(pid_para_t* pi, float kp, float ki, float ts, float lim)
 {
-    float wc = M_2PI * pm->para.ibw;      /* 目标带宽 (rad/s) */
-
-    /* d 轴用 Ld, q 轴用 Lq (凸极电机两者不同) */
-    pm->id_pi.kp = wc * pm->para.Ld;
-    pm->id_pi.ki = wc * pm->para.Rs * pm->period.foc_ts;
-
-    pm->iq_pi.kp = wc * pm->para.Lq;
-    pm->iq_pi.ki = wc * pm->para.Rs * pm->period.foc_ts;
-
-    pm->id_pi.ts = pm->period.foc_ts;
-    pm->iq_pi.ts = pm->period.foc_ts;
+    pi->kp = kp;
+    pi->ki = ki;
+    pi->ts = ts;
+    pi->i_term_max = lim;
+    pi->i_term_min = -lim;
+    pi->out_max = lim;
+    pi->out_min = -lim;
 }
 
 /**
 ***********************************************************************
 * @brief:      foc_cur_pi_calc(pmsm_t* pm)
-* @param[in]:  pm  指向 PMSM 控制结构体的指针
-* @retval:     void
-* @details:    d/q 轴电流 PI 计算, 输出 v_d / v_q
-* @note        限幅跟随母线电压 (pm->foc.vs): 母线跌落时输出上限自动收紧,
-*              由 SVPWM 的过调制区兜底, 不会算出一个物理上给不出的电压
+* @details:    d/q 电流环。调用 serial_pid_ctrl, 给定和反馈分开传进去。
+*              kp = wc*L, ki = R/L, 周期用 cur_pid_ts, 限幅用 foc.vs。
 ***********************************************************************
 **/
 _RAM_FUNC void foc_cur_pi_calc(pmsm_t* pm)
 {
+    float wc = M_2PI * pm->para.ibw;
+    float ld = pm->para.Ld;
+    float lq = pm->para.Lq;
     float vlim = pm->foc.vs;
 
-    /* 限幅值每周期刷新 (vs 依赖实时母线电压) */
-    pid_limit_init(&pm->id_pi, vlim, -vlim, vlim, -vlim);
-    pid_limit_init(&pm->iq_pi, vlim, -vlim, vlim, -vlim);
+    if (ld < 1.0e-6f)
+    {
+        ld = 1.0e-6f;
+    }
+    if (lq < 1.0e-6f)
+    {
+        lq = 1.0e-6f;
+    }
+    if (vlim < 0.5f)
+    {
+        vlim = 0.5f;
+    }
 
-    /* d/q 各自独立 PI, 误差 = 给定 - 反馈 */
-    pm->foc.v_d = parallel_pid_ctrl(&pm->id_pi, pm->ctrl.id_set, pm->foc.i_d);
-    pm->foc.v_q = parallel_pid_ctrl(&pm->iq_pi, pm->ctrl.iq_set, pm->foc.i_q);
+    pid_axis_prepare(&pm->id_pi, wc * ld, pm->para.Rs / ld, pm->period.cur_pid_ts, vlim);
+    pid_axis_prepare(&pm->iq_pi, wc * lq, pm->para.Rs / lq, pm->period.cur_pid_ts, vlim);
+
+    pm->foc.v_d = serial_pid_ctrl(&pm->id_pi, pm->ctrl.id_set, pm->foc.i_d);
+    pm->foc.v_q = serial_pid_ctrl(&pm->iq_pi, pm->ctrl.iq_set, pm->foc.i_q);
 }
 
 /**
@@ -206,17 +212,14 @@ _RAM_FUNC void foc_curr(pmsm_t* pm, float id_set, float iq_set, float pos)
     pm->ctrl.id_set = sat1_datf(id_set, CUR_IQ_LIMIT, -CUR_IQ_LIMIT);
     pm->ctrl.iq_set = sat1_datf(iq_set, CUR_IQ_LIMIT, -CUR_IQ_LIMIT);
 
-    /* ---- 2. 电角度 -> sin/cos ---- */
+    /* ---- 2. 和 foc_volt 同一顺序: Clarke, 电角度, Park ---- */
+    clarke_transform(&pm->foc);
     pm->foc.theta = pos;
     wrap_0_2pi(pm->foc.theta);
     sin_cos_val(&pm->foc);
-
-    /* ---- 3. 三相电流 -> alpha/beta -> d/q ---- */
-    clarke_transform(&pm->foc);
     park_transform(&pm->foc);
 
     /* ---- 4. 电流 PI ---- */
-    foc_cur_pi_tune(pm);
     foc_cur_pi_calc(pm);
 
     /* ---- 5. d/q 电压 -> alpha/beta -> SVPWM ---- */
@@ -249,38 +252,16 @@ volatile float spd_wr_meas = 0.0f;
 * @brief:      spd_measure_update(void)
 * @param[in]:  void
 * @retval:     void
-* @details:    实测机械角速度, 主循环 100Hz 调用
+* @details:    实测机械角速度。编码器每读一次就调用一次
 *
-*  ⚠️ 为什么必须在主循环算, 不能用 foc_spd_measure_M():
-*     MT6701 是在主循环 (100Hz) 用 SPI 读的, 而 foc_para_calc() 在
-*     20kHz 的电流环中断里跑。对同一个角度值连续微分 200 次的结果是:
-*     每 10ms 蹦一个尖峰、中间全是 0 —— 实测 wr 在 -84 ~ +92 rad/s
-*     之间乱跳, 速度环拿这种反馈根本没法工作。
-*
-*  这里改成用 total_rad 在主循环差分, 再过一阶低通。截止频率取
-*  速度环带宽的 2~3 倍就够, 太高会把噪声放进来, 太低会拖慢响应。
+*  用 total_rad 在真实时间上做差分, 再过一阶低通。
+*  不能放到 20kHz 中断里对同一个角度连续微分, 否则每来一个新角度就蹦一个尖峰。
 ***********************************************************************
 **/
 void spd_measure_update(void)
 {
-    /* 时间触发的固定窗口测速。
-     *
-     * ⚠️ 为什么窗口要用【真实毫秒】而不是【多少个主循环周期】:
-     *
-     *   主循环标称 100Hz (HAL_Delay(10)), 但里面还有 VOFA 发送(阻塞串口)、
-     *   温度计算、上位机命令处理。上位机每 3 秒发一次 GET?, 回复将近
-     *   900 字节, 主循环会明显卡顿一下 —— 周期根本不是恒定的 10ms。
-     *
-     *   原来写成 转速 = 角度差 / (8 * 0.01), 分母是写死的。周期一变长,
-     *   算出来的转速就偏低(或偏高), 速度环追着这个假数据跑, 表现成
-     *   转速在 0 和 ~10 rad/s 之间蹦, 而且给定 3/6/8/12 时最小值都是 ~0、
-     *   最大值都是 ~10, 只有均值随给定变 —— 像在"靠占空比凑平均转速"。
-     *
-     *   改成用 HAL_GetTick() 量真实间隔, 分母就永远是对的。
-     *
-     * 窗口取 SPD_WIN_MS(80ms): 12N14P 齿槽 84 步/圈, 8 rad/s 时齿槽频率
-     * 107Hz, 主循环只有 100Hz, 不平均掉的话会被混叠成低频假信号。
-     * 80ms 跨过约 8.5 个齿槽周期, 代价是约 40ms 滞后。 */
+    /* 用 HAL_GetTick() 量真实间隔。发送波形和回命令会卡住主循环,
+     * 分母如果写死 10ms, 转速会被算偏。 */
     static float    s_prev_rad  = 0.0f;
     static uint32_t s_prev_tick = 0u;
     static uint8_t  s_first     = 1u;
@@ -309,51 +290,121 @@ void spd_measure_update(void)
     s_prev_rad  = mt6701.total_rad;
     s_prev_tick = now;
 
-    spd_wr_meas += SPD_LPF_A * (raw - spd_wr_meas);
+    /* 圈数误判的尖峰不进滤波器, 基准角度已经更新, 不会连着两拍都是尖峰。 */
+    if ((raw < spd_wr_meas + SPD_GLITCH) && (raw > spd_wr_meas - SPD_GLITCH))
+    {
+        spd_wr_meas += SPD_LPF_A * (raw - spd_wr_meas);
+    }
+
+    foc_spd_pi_calc(&pm, (float)dt_ms * 0.001f);
 }
 
 /**
 ***********************************************************************
-* @brief:      foc_spd_pi_calc(pmsm_t* pm)
-* @param[in]:  pm  指向 PMSM 控制结构体的指针
-* @retval:     void
-* @details:    速度环 PI, 输出作为 q 轴电流给定 (串级控制的外环)
-* @note        用 PDFF 形式 (微分作用在反馈上), 速度给定阶跃时不会有微分冲击
+* @brief:      foc_spd_pi_calc(pmsm_t* pm, float dt)
+* @param[in]:  dt  这一拍测速的真实间隔 (秒)
+* @details:    和桌面工程 pv_vel_mode 一样: 给定先按 wm_acc / wm_dec 做直线加减速,
+*              再送进 serial_pid_ctrl。给定从 0 跳到 10 时, 200 rad/s^2 要爬 50ms,
+*              不会一拍把电流打满、转速冲到 40。
 ***********************************************************************
 **/
-void foc_spd_pi_calc(pmsm_t* pm)
+_RAM_FUNC void foc_spd_pi_calc(pmsm_t* pm, float dt)
 {
-    float wc_spd = M_2PI * host_spd_bw;
+    static float s_wr_ref = 0.0f;
+    float kt;
+    float js;
+    float ws;
+    float kp;
+    float ki;
+    float ilim;
     float iq;
+    float cmd;
+    float diff;
+    float rate;
+    float step;
 
-    /* 增益两种来源:
-     *   host_spd_kp > 0  -> 用上位机手调的值, 边看波形边试
-     *   否则             -> 按模型整定 kp = wc*Js, ki = wc*B*ts
-     * Js / B 都是估的, 所以手调优先。 */
+    if ((pm->foc.mode != foc_vel_mode) && (pm->foc.mode != foc_pos_mode))
+    {
+        pm->spd_pi.i_term = 0.0f;
+        s_wr_ref = 0.0f;
+        return;
+    }
+    if (pm->ctrl_bit != opera)
+    {
+        pm->spd_pi.i_term = 0.0f;
+        s_wr_ref = 0.0f;
+        pm->ctrl.iq_set = 0.0f;
+        return;
+    }
+
+    if (dt < 0.001f)
+    {
+        dt = 0.001f;
+    }
+    if (dt > 0.05f)
+    {
+        dt = 0.05f;
+    }
+
+    js = pm->para.Js;
+    if (js < 1.0e-8f)
+    {
+        js = 1.0e-8f;
+    }
+    kt = pm->para.Kt;
+    if (kt < 1.0e-4f)
+    {
+        kt = 1.0e-4f;
+    }
+
+    /* 0.025 A/(rad/s): 转速掉 6 rad/s 时给 0.15A, 够把齿槽顶过去。 */
+    kp = 0.025f;
+    ws = kp * kt / js;
+    ki = ws / 10.0f;
     if (host_spd_kp > 0.0f)
     {
-        pm->vq_pi.kp = host_spd_kp;
-        pm->vq_pi.ki = host_spd_ki;
+        kp = host_spd_kp;
+        ki = host_spd_ki;
+    }
+
+    ilim = pm->ctrl.pmax_iq;
+    if (ilim < 0.05f)
+    {
+        ilim = 0.05f;
+    }
+
+    pid_axis_prepare(&pm->spd_pi, kp, ki, dt, ilim);
+
+    /* spd_traj 的直线段: 参考转速每拍最多变 acc*dt。加速用 wm_acc, 减速用 wm_dec。 */
+    cmd = pm->ctrl.wr_set;
+    diff = cmd - s_wr_ref;
+    rate = pm->ctrl.wm_acc;
+    if ((cmd * s_wr_ref < 0.0f) ||
+        ((cmd >= 0.0f) && (cmd < s_wr_ref)) ||
+        ((cmd < 0.0f) && (cmd > s_wr_ref)))
+    {
+        rate = pm->ctrl.wm_dec;
+    }
+    if (rate < 1.0f)
+    {
+        rate = 1.0f;
+    }
+    step = rate * dt;
+    if (diff > step)
+    {
+        s_wr_ref += step;
+    }
+    else if (diff < -step)
+    {
+        s_wr_ref -= step;
     }
     else
     {
-        pm->vq_pi.kp = wc_spd * pm->para.Js;
-        pm->vq_pi.ki = wc_spd * pm->para.B * pm->period.spd_pid_ts;
+        s_wr_ref = cmd;
     }
-    pm->vq_pi.ts = pm->period.spd_pid_ts;
 
-    /* 积分限幅 = 电流给定上限, 输出限幅同理 —— 速度环的输出是电流 */
-    pid_limit_init(&pm->vq_pi, CUR_IQ_LIMIT, -CUR_IQ_LIMIT, CUR_IQ_LIMIT, -CUR_IQ_LIMIT);
-
-    iq = pdff_ctrl(&pm->vq_pi, pm->ctrl.wr_set, spd_wr_meas);
-
-    /* ⚠️ 极性: 实测 +iq 得到负转速, 所以整体取反。
-     * 不取反的话误差越大输出越大、转速越往反方向跑 -> 正反馈 -> 飞车。
-     * 详见 common.h 里 host_spd_sign 的说明 */
-    iq *= host_spd_sign;
-
-    /* 再用控制参数里的正反向限幅夹一次 (用户可以在上位机单独限制) */
-    pm->ctrl.iq_set = sat1_datf(iq, pm->ctrl.pmax_iq, pm->ctrl.nmax_iq);
+    iq = serial_pid_ctrl(&pm->spd_pi, s_wr_ref, spd_wr_meas) * host_spd_sign;
+    pm->ctrl.iq_set = iq;
 }
 
 /**
@@ -730,28 +781,51 @@ void openloop_test_run(void)
 
 /**
 ***********************************************************************
-* @brief:      foc_vel(pmsm_t* pm, float vel_set, float iq_set, float pos)
+* @brief:      foc_pos(pmsm_t* pm, float pos_set, float vel_set, float iq_set, float pos)
 * @param[in]:  pm       指向 PMSM 控制结构体的指针
-* @param[in]:  vel_set  速度给定 (机械角速度 rad/s)
-* @param[in]:  iq_set   q 轴电流前馈 (可给 0)
-* @param[in]:  pos      电角度 (rad)
+* @param[in]:  pos_set  目标机械角 (rad, 多圈, 和 total_rad 同一坐标系)
+* @param[in]:  vel_set  速度前馈 (rad/s), 一般给 0
+* @param[in]:  iq_set   电流前馈 (A), 一般给 0
+* @param[in]:  pos      电角度 (rad), 交给电流环
 * @retval:     void
-* @details:    速度模式: 速度环算出 q 轴电流给定, 再交给电流环执行
+* @details:    位置环 5 kHz。ki 固定 0, 输出是机械速度, 再交给 foc_vel。
+***********************************************************************
+**/
+_RAM_FUNC void foc_pos(pmsm_t* pm, float pos_set, float vel_set, float iq_set, float pos)
+{
+    float lim;
+    (void)vel_set;
+
+    lim = host_pos_vmax;
+    if (lim < 0.5f)
+    {
+        lim = 0.5f;
+    }
+
+    pm->period.pos_pid_cnt++;
+    if (pm->period.pos_pid_cnt >= pm->period.pos_pid_cnt_val)
+    {
+        pm->period.pos_pid_cnt = 0u;
+        pid_axis_prepare(&pm->pos_pi, host_pos_kp, 0.0f, pm->period.pos_pid_ts, lim);
+        pm->ctrl.wr_set = serial_pid_ctrl(&pm->pos_pi, pos_set, mt6701.total_rad);
+    }
+    foc_vel(pm, pm->ctrl.wr_set, iq_set, pos);
+}
+
+/**
+***********************************************************************
+* @brief:      foc_vel(pmsm_t* pm, float vel_set, float iq_set, float pos)
+* @param[in]:  vel_set  速度给定 (rad/s)
+* @param[in]:  iq_set   电流前馈，一般给 0
+* @param[in]:  pos      电角度 (rad)
+* @details:    速度模式。速度给定写入 wr_set，转矩电流用速度环已经算好的 iq
 ***********************************************************************
 **/
 _RAM_FUNC void foc_vel(pmsm_t* pm, float vel_set, float iq_set, float pos)
 {
-    pm->foc.mode = foc_vel_mode;
+    /* 速度 PI 在测速那一拍已经写好 iq_set。这里只跑电流环。 */
     pm->ctrl.wr_set = vel_set;
-
-    /* 外环: 速度 PI -> iq */
-    foc_spd_pi_calc(pm);
-
-    /* 前馈叠加 (可选): 上位机直接给的 iq 分量 */
-    pm->ctrl.iq_set += iq_set;
-
-    /* 内环: 电流环执行。id 给 0 (表贴式, 最大转矩/电流) */
-    foc_curr(pm, CUR_ID_SET, pm->ctrl.iq_set, pos);
+    foc_curr(pm, CUR_ID_SET, pm->ctrl.iq_set + iq_set, pos);
 }
 
 /* ===========================================================================

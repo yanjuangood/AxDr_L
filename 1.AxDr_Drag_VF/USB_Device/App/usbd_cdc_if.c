@@ -148,6 +148,7 @@ USBD_CDC_ItfTypeDef USBD_Interface_fops_FS =
 /**
   * @brief  Initializes the CDC media low layer over the FS USB IP
   * @retval USBD_OK if all operations are OK else USBD_FAIL
+  * 初始化全速 CDC，把收发缓冲交给协议栈。
   */
 static int8_t CDC_Init_FS(void)
 {
@@ -162,6 +163,7 @@ static int8_t CDC_Init_FS(void)
 /**
   * @brief  DeInitializes the CDC media low layer
   * @retval USBD_OK if all operations are OK else USBD_FAIL
+  * 关闭 CDC。本工程没有额外资源要释放。
   */
 static int8_t CDC_DeInit_FS(void)
 {
@@ -176,6 +178,7 @@ static int8_t CDC_DeInit_FS(void)
   * @param  pbuf: Buffer containing command data (request parameters)
   * @param  length: Number of data to be sent (in bytes)
   * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
+  * 处理主机的 CDC 控制请求，例如串口线状态。
   */
 static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 {
@@ -257,6 +260,7 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
   * @param  Buf: Buffer of data to be received
   * @param  Len: Number of data received (in bytes)
   * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
+  * 主机数据到达。字节交给命令解析，解析放到主循环。
   */
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
@@ -281,6 +285,7 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
   * @param  Buf: Buffer of data to be sent
   * @param  Len: Number of data to be sent (in bytes)
   * @retval USBD_OK if all operations are OK else USBD_FAIL or USBD_BUSY
+  * 经 USB 批量端点把一包数据发给主机。
   */
 uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
 {
@@ -307,6 +312,7 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
   * @param  Buf: Buffer of data to be received
   * @param  Len: Number of data received (in bytes)
   * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
+  * 一包发送完成。本工程不额外处理。
   */
 static int8_t CDC_TransmitCplt_FS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
 {

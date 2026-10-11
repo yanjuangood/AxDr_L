@@ -55,6 +55,7 @@ void Error_Handler(void);
 
 /* Private functions ---------------------------------------------------------*/
 static USBD_StatusTypeDef USBD_Get_USB_Status(HAL_StatusTypeDef hal_status);
+/* 从 USB 挂起恢复时重新配置系统时钟 */
 /* USER CODE BEGIN 1 */
 static void SystemClockConfig_Resume(void);
 
@@ -64,6 +65,7 @@ extern void SystemClock_Config(void);
 /*******************************************************************************
                        LL Driver Callbacks (PCD -> USB Device Library)
 *******************************************************************************/
+/* 打开 USB 时钟，配置中断 */
 /* MSP Init */
 
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
@@ -100,6 +102,7 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
   }
 }
 
+/* 关闭 USB 时钟和中断 */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void HAL_PCD_MspDeInit(PCD_HandleTypeDef* pcdHandle)
 #else
@@ -127,6 +130,7 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef* pcdHandle)
   * @brief  Setup stage callback
   * @param  hpcd: PCD handle
   * @retval None
+  * SETUP 包到达，转给设备库。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_SetupStageCallback(PCD_HandleTypeDef *hpcd)
@@ -148,6 +152,7 @@ void HAL_PCD_SetupStageCallback(PCD_HandleTypeDef *hpcd)
   * @param  hpcd: PCD handle
   * @param  epnum: Endpoint number
   * @retval None
+  * OUT 数据到齐，转给设备库。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_DataOutStageCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
@@ -169,6 +174,7 @@ void HAL_PCD_DataOutStageCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
   * @param  hpcd: PCD handle
   * @param  epnum: Endpoint number
   * @retval None
+  * IN 传输完成，转给设备库。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_DataInStageCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
@@ -189,6 +195,7 @@ void HAL_PCD_DataInStageCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
   * @brief  SOF callback.
   * @param  hpcd: PCD handle
   * @retval None
+  * 帧起始，转给设备库。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_SOFCallback(PCD_HandleTypeDef *hpcd)
@@ -209,6 +216,7 @@ void HAL_PCD_SOFCallback(PCD_HandleTypeDef *hpcd)
   * @brief  Reset callback.
   * @param  hpcd: PCD handle
   * @retval None
+  * 总线复位。按全速设置并通知设备库。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_ResetCallback(PCD_HandleTypeDef *hpcd)
@@ -240,6 +248,7 @@ void HAL_PCD_ResetCallback(PCD_HandleTypeDef *hpcd)
   * When Low power mode is enabled the debug cannot be used (IAR, Keil doesn't support it)
   * @param  hpcd: PCD handle
   * @retval None
+  * 总线挂起。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_SuspendCallback(PCD_HandleTypeDef *hpcd)
@@ -270,6 +279,7 @@ void HAL_PCD_SuspendCallback(PCD_HandleTypeDef *hpcd)
   * When Low power mode is enabled the debug cannot be used (IAR, Keil doesn't support it)
   * @param  hpcd: PCD handle
   * @retval None
+  * 总线恢复，必要时重新开时钟。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_ResumeCallback(PCD_HandleTypeDef *hpcd)
@@ -301,6 +311,7 @@ void HAL_PCD_ResumeCallback(PCD_HandleTypeDef *hpcd)
   * @param  hpcd: PCD handle
   * @param  epnum: Endpoint number
   * @retval None
+  * 同步 OUT 未完成。CDC 不用这条。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_ISOOUTIncompleteCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
@@ -322,6 +333,7 @@ void HAL_PCD_ISOOUTIncompleteCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
   * @param  hpcd: PCD handle
   * @param  epnum: Endpoint number
   * @retval None
+  * 同步 IN 未完成。CDC 不用这条。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_ISOINIncompleteCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
@@ -342,6 +354,7 @@ void HAL_PCD_ISOINIncompleteCallback(PCD_HandleTypeDef *hpcd, uint8_t epnum)
   * @brief  Connect callback.
   * @param  hpcd: PCD handle
   * @retval None
+  * 检测到 USB 连接。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_ConnectCallback(PCD_HandleTypeDef *hpcd)
@@ -362,6 +375,7 @@ void HAL_PCD_ConnectCallback(PCD_HandleTypeDef *hpcd)
   * @brief  Disconnect callback.
   * @param  hpcd: PCD handle
   * @retval None
+  * 检测到 USB 断开。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCD_DisconnectCallback(PCD_HandleTypeDef *hpcd)
@@ -390,6 +404,7 @@ void HAL_PCD_DisconnectCallback(PCD_HandleTypeDef *hpcd)
   * @brief  Initializes the low level portion of the device driver.
   * @param  pdev: Device handle
   * @retval USBD status
+  * 初始化 PCD，并登记协议栈要用的回调。
   */
 USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
 {
@@ -455,6 +470,7 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   * @brief  De-Initializes the low level portion of the device driver.
   * @param  pdev: Device handle
   * @retval USBD status
+  * 反初始化 USB 外设。
   */
 USBD_StatusTypeDef USBD_LL_DeInit(USBD_HandleTypeDef *pdev)
 {
@@ -472,6 +488,7 @@ USBD_StatusTypeDef USBD_LL_DeInit(USBD_HandleTypeDef *pdev)
   * @brief  Starts the low level portion of the device driver.
   * @param  pdev: Device handle
   * @retval USBD status
+  * 启动 USB 设备。
   */
 USBD_StatusTypeDef USBD_LL_Start(USBD_HandleTypeDef *pdev)
 {
@@ -489,6 +506,7 @@ USBD_StatusTypeDef USBD_LL_Start(USBD_HandleTypeDef *pdev)
   * @brief  Stops the low level portion of the device driver.
   * @param  pdev: Device handle
   * @retval USBD status
+  * 停止 USB 设备。
   */
 USBD_StatusTypeDef USBD_LL_Stop(USBD_HandleTypeDef *pdev)
 {
@@ -509,6 +527,7 @@ USBD_StatusTypeDef USBD_LL_Stop(USBD_HandleTypeDef *pdev)
   * @param  ep_type: Endpoint type
   * @param  ep_mps: Endpoint max packet size
   * @retval USBD status
+  * 按地址、类型和包长打开端点。
   */
 USBD_StatusTypeDef USBD_LL_OpenEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr, uint8_t ep_type, uint16_t ep_mps)
 {
@@ -527,6 +546,7 @@ USBD_StatusTypeDef USBD_LL_OpenEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr, uin
   * @param  pdev: Device handle
   * @param  ep_addr: Endpoint number
   * @retval USBD status
+  * 关闭端点。
   */
 USBD_StatusTypeDef USBD_LL_CloseEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
 {
@@ -545,6 +565,7 @@ USBD_StatusTypeDef USBD_LL_CloseEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
   * @param  pdev: Device handle
   * @param  ep_addr: Endpoint number
   * @retval USBD status
+  * 清空端点 FIFO。
   */
 USBD_StatusTypeDef USBD_LL_FlushEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
 {
@@ -563,6 +584,7 @@ USBD_StatusTypeDef USBD_LL_FlushEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
   * @param  pdev: Device handle
   * @param  ep_addr: Endpoint number
   * @retval USBD status
+  * 让端点回应 STALL。
   */
 USBD_StatusTypeDef USBD_LL_StallEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
 {
@@ -581,6 +603,7 @@ USBD_StatusTypeDef USBD_LL_StallEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
   * @param  pdev: Device handle
   * @param  ep_addr: Endpoint number
   * @retval USBD status
+  * 清除端点的 STALL。
   */
 USBD_StatusTypeDef USBD_LL_ClearStallEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
 {
@@ -599,6 +622,7 @@ USBD_StatusTypeDef USBD_LL_ClearStallEP(USBD_HandleTypeDef *pdev, uint8_t ep_add
   * @param  pdev: Device handle
   * @param  ep_addr: Endpoint number
   * @retval Stall (1: Yes, 0: No)
+  * 查询端点是否处于 STALL。
   */
 uint8_t USBD_LL_IsStallEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
 {
@@ -619,6 +643,7 @@ uint8_t USBD_LL_IsStallEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
   * @param  pdev: Device handle
   * @param  dev_addr: Device address
   * @retval USBD status
+  * 把主机分配的地址写给 USB 外设。
   */
 USBD_StatusTypeDef USBD_LL_SetUSBAddress(USBD_HandleTypeDef *pdev, uint8_t dev_addr)
 {
@@ -639,6 +664,7 @@ USBD_StatusTypeDef USBD_LL_SetUSBAddress(USBD_HandleTypeDef *pdev, uint8_t dev_a
   * @param  pbuf: Pointer to data to be sent
   * @param  size: Data size
   * @retval USBD status
+  * 从指定端点发送数据。
   */
 USBD_StatusTypeDef USBD_LL_Transmit(USBD_HandleTypeDef *pdev, uint8_t ep_addr, uint8_t *pbuf, uint32_t size)
 {
@@ -659,6 +685,7 @@ USBD_StatusTypeDef USBD_LL_Transmit(USBD_HandleTypeDef *pdev, uint8_t ep_addr, u
   * @param  pbuf: Pointer to data to be received
   * @param  size: Data size
   * @retval USBD status
+  * 准备接收下一次 OUT 数据。
   */
 USBD_StatusTypeDef USBD_LL_PrepareReceive(USBD_HandleTypeDef *pdev, uint8_t ep_addr, uint8_t *pbuf, uint32_t size)
 {
@@ -677,6 +704,7 @@ USBD_StatusTypeDef USBD_LL_PrepareReceive(USBD_HandleTypeDef *pdev, uint8_t ep_a
   * @param  pdev: Device handle
   * @param  ep_addr: Endpoint number
   * @retval Received Data Size
+  * 读取本次 OUT 实际收到的字节数。
   */
 uint32_t USBD_LL_GetRxDataSize(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
 {
@@ -688,6 +716,7 @@ uint32_t USBD_LL_GetRxDataSize(USBD_HandleTypeDef *pdev, uint8_t ep_addr)
   * @param  hpcd: PCD handle
   * @param  msg: LPM message
   * @retval None
+  * 链路电源管理事件。
   */
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
 static void PCDEx_LPM_Callback(PCD_HandleTypeDef *hpcd, PCD_LPM_MsgTypeDef msg)
@@ -727,6 +756,7 @@ void HAL_PCDEx_LPM_Callback(PCD_HandleTypeDef *hpcd, PCD_LPM_MsgTypeDef msg)
   * @brief  Delays routine for the USB Device Library.
   * @param  Delay: Delay in ms
   * @retval None
+  * 毫秒延时，给协议栈用。
   */
 void USBD_LL_Delay(uint32_t Delay)
 {
@@ -737,6 +767,7 @@ void USBD_LL_Delay(uint32_t Delay)
   * @brief  Static single allocation.
   * @param  size: Size of allocated memory
   * @retval None
+  * 给 CDC 句柄分配一块静态内存。
   */
 void *USBD_static_malloc(uint32_t size)
 {
@@ -748,6 +779,7 @@ void *USBD_static_malloc(uint32_t size)
   * @brief  Dummy memory free
   * @param  p: Pointer to allocated  memory address
   * @retval None
+  * 静态内存不释放。
   */
 void USBD_static_free(void *p)
 {
@@ -759,6 +791,7 @@ void USBD_static_free(void *p)
   * @brief  Configures system clock after wake-up from USB resume callBack:
   *         enable HSI, PLL and select PLL as system clock source.
   * @retval None
+  * 从 USB 挂起恢复时重新配置系统时钟。
   */
 static void SystemClockConfig_Resume(void)
 {
@@ -770,6 +803,7 @@ static void SystemClockConfig_Resume(void)
   * @brief  Returns the USB status depending on the HAL status:
   * @param  hal_status: HAL status
   * @retval USB status
+  * 把 HAL 的状态码换成 USB 库的状态码。
   */
 USBD_StatusTypeDef USBD_Get_USB_Status(HAL_StatusTypeDef hal_status)
 {

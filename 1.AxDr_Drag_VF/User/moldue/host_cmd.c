@@ -13,6 +13,7 @@
 **/
 #include "host_cmd.h"
 #include "common.h"
+#include "mt6701.h"
 #include "usbd_cdc_if.h"        /* CDC_Transmit_FS */
 #include <stdio.h>
 #include <stdarg.h>
@@ -35,10 +36,16 @@
 float   host_enc_dir = -1.0f;
 
 /* ---- 速度环运行时参数 ---- */
-float   host_spd_bw   = 20.0f;      /* 速度环带宽 (Hz), 仅模型整定时用 */
-float   host_spd_kp   = 0.0f;       /* 手调 kp, >0 生效 */
-float   host_spd_ki   = 0.0f;       /* 手调 ki */
+/* 速度环走 serial_pid_ctrl。kp = J*ws/Kt, ki = ws/delta, ws = 2*pi*ibw/delta。
+ * host_spd_kp > 0 时改用下面两个数, 含义和 serial_pid 的 kp、ki 相同。
+ * 速度环平时不读 host_spd_bw。 */
+float   host_spd_bw   = 15.0f;
+float   host_spd_kp   = 0.0f;
+float   host_spd_ki   = 0.0f;
 float   host_spd_sign = -1.0f;      /* 输出极性, 见 common.h 说明 */
+float   host_pos_kp   = 8.0f;       /* 位置误差 1 rad -> 速度给定 8 rad/s */
+float   host_pos_kd   = 0.0f;
+float   host_pos_vmax = 20.0f;      /* 位置环输出的速度限幅 (rad/s) */
 
 /* 电角度零点标定触发标志: 上位机发 CAL 时置 1, 主循环看到后跑一次标定 */
 volatile uint8_t host_cal_request = 0u;
@@ -102,6 +109,10 @@ static const hc_param_t s_params[] =
     /* ---- 运行控制 ---- */
     { "mode",   PT_I, &pm.foc.mode,      0.0f,      4.0f,  "0=V/f 1=电流 2=速度 3=位置 4=自检 (见 common.h 的 foc_mode_e)" },
     { "spd",    PT_F, &pm.ctrl.wr_set,  -200.0f,  200.0f,  "速度给定 (rad/s, 机械)" },
+    { "pos",    PT_F, &pm.ctrl.posm_set,-1000.0f, 1000.0f, "位置给定 (rad, 多圈机械角)" },
+    { "poskp",  PT_F, &host_pos_kp,      0.0f,    200.0f,  "位置环 kp, 输出速度 (rad/s 每 rad)" },
+    { "poskd",  PT_F, &host_pos_kd,      0.0f,      5.0f,  "位置环不用微分" },
+    { "posvmax",PT_F, &host_pos_vmax,    0.5f,    200.0f,  "位置环速度限幅 (rad/s)" },
     { "id",     PT_F, &pm.ctrl.id_set,   -2.0f,     2.0f,  "d 轴电流给定 (A), 表贴式给 0" },
     { "iq",     PT_F, &pm.ctrl.iq_set,   -2.0f,     2.0f,  "q 轴电流给定 (A), 对应转矩" },
     { "vq",     PT_F, &pm.ctrl.vq_set,   -6.0f,     6.0f,  "q 轴电压给定 (V), 仅 V/f 模式用" },
@@ -126,9 +137,9 @@ static const hc_param_t s_params[] =
     { "encdir", PT_F, &host_enc_dir,   -1.0f,       1.0f,  "编码器方向 +1/-1" },
 
     /* ---- 速度环 ---- */
-    { "spdbw",  PT_F, &host_spd_bw,     1.0f,     200.0f,  "速度环带宽 (Hz), 仅模型整定时用" },
-    { "spdkp",  PT_F, &host_spd_kp,     0.0f,      10.0f,  "速度环 kp 手调, >0 时生效 (A/(rad/s))" },
-    { "spdki",  PT_F, &host_spd_ki,     0.0f,      10.0f,  "速度环 ki 手调" },
+    { "spdbw",  PT_F, &host_spd_bw,     1.0f,     200.0f,  "速度环不读这个数, 改 ibw 或 delta" },
+    { "spdkp",  PT_F, &host_spd_kp,     0.0f,      10.0f,  "速度环 kp, >0 才覆盖 (A 每 rad/s)" },
+    { "spdki",  PT_F, &host_spd_ki,     0.0f,    2000.0f,  "速度环 ki, serial_pid 的 ki (rad/s)" },
     { "spdsgn", PT_F, &host_spd_sign,  -1.0f,       1.0f,  "速度环输出极性, 默认 -1, 别乱改" },
 
     /* ---- 编码器角度误差谐波补偿 (tools/ecc_cal.py 标定后下发) ---- */
@@ -193,6 +204,7 @@ static const hc_param_t *hc_find(const char *name)
     return NULL;
 }
 
+/* 按参数类型读出当前值 */
 static float hc_get(const hc_param_t *p)
 {
     switch (p->type)
@@ -203,6 +215,7 @@ static float hc_get(const hc_param_t *p)
     }
 }
 
+/* 限幅后写入参数。运动类参数会请求重新使能。 */
 static void hc_set(const hc_param_t *p, float v)
 {
     /* 限幅, 防止上位机手滑 */
@@ -211,6 +224,7 @@ static void hc_set(const hc_param_t *p, float v)
 
     /* 运动类参数: 写完自动重新上电 (见 host_start_request 的说明) */
     if ((strcmp(p->name, "mode") == 0) || (strcmp(p->name, "spd")  == 0) ||
+        (strcmp(p->name, "pos")  == 0) ||
         (strcmp(p->name, "iq")   == 0) || (strcmp(p->name, "id")   == 0) ||
         (strcmp(p->name, "vq")   == 0) || (strcmp(p->name, "vd")   == 0))
     {
@@ -222,6 +236,13 @@ static void hc_set(const hc_param_t *p, float v)
     case PT_F:  *(float *)p->ptr    = v;                          break;
     case PT_I:  *(int32_t *)p->ptr  = (int32_t)v;                 break;
     default:    *(uint32_t *)p->ptr = (uint32_t)v;                break;
+    }
+
+    /* 刚切到位置模式时, 给定如果还是 0, 电机会往累计角 0 冲。
+     * 先停在当前角度, 等上位机再发 pos。 */
+    if ((strcmp(p->name, "mode") == 0) && ((int32_t)v == 3))
+    {
+        pm.ctrl.posm_set = mt6701.total_rad;
     }
 }
 
@@ -260,6 +281,7 @@ static void hc_dump_all(void)
     hc_line("# END");
 }
 
+/* 打印参数表和命令说明 */
 static void hc_help(void)
 {
     uint32_t i;

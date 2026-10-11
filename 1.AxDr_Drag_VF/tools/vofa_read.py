@@ -20,7 +20,7 @@ import struct
 import time
 
 PORT = r'\\.\COM12'
-NCH = 16
+NCH = 18
 TAIL = b'\x00\x00\x80\x7f'
 FRAME = NCH * 4 + 4
 
@@ -42,10 +42,12 @@ NAMES = [
     'T_mos(C)',      # 13 板载 NTC MOS 温度
     'i_peak(A)',     # 14 电流幅值峰值 (保持)
     'crc_ok',        # 15 编码器 CRC 状态
+    'wr_set(rad/s)', # 16 目标转速，和通道 12 叠在一起看
+    'pos_set(rad)',  # 17 目标位置，和通道 1 叠在一起看
 ]
 
 # 只看这几个就够日常用
-KEY = [5, 6, 7, 9, 10, 12]
+KEY = [5, 6, 7, 9, 10, 12, 16]
 
 
 def read_frames(seconds):

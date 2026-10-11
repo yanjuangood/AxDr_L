@@ -85,6 +85,13 @@ _RAM_FUNC void pmsm_state_ctrl(pmsm_t* pm)
 **/
 _RAM_FUNC void pmsm_mode_ctrl(pmsm_t* pm)
 {
+	/* 离开速度/位置模式时把这两环的积分清掉, 下次进来不会带着旧电流冲出去 */
+	if ((pm->foc.mode != foc_vel_mode) && (pm->foc.mode != foc_pos_mode))
+	{
+		pm->spd_pi.i_term = 0.0f;
+		pm->pos_pi.i_term = 0.0f;
+	}
+
 	/* 默认 pm->foc.mode == foc_volt_mode (枚举值 0), 保持原来的 V/f 开环行为。
 	 * 只有上位机显式把 foc.mode 切过去, 才会走闭环分支 */
 	if (pm->foc.mode == foc_volt_mode)
@@ -104,6 +111,15 @@ _RAM_FUNC void pmsm_mode_ctrl(pmsm_t* pm)
 		if (pm->fault.all == 0u)
 		{
 			foc_vel(pm, pm->ctrl.wr_set, 0.0f, pm->foc.p_e);
+		}
+	}
+	else if (pm->foc.mode == foc_pos_mode)
+	{
+		/* 位置闭环: 位置环给出速度, 再走速度环和电流环 */
+		sensory_pos_calc(pm);
+		if (pm->fault.all == 0u)
+		{
+			foc_pos(pm, pm->ctrl.posm_set, 0.0f, 0.0f, pm->foc.p_e);
 		}
 	}
 	else

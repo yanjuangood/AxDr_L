@@ -379,6 +379,8 @@ void pmsm_fault_stop_mode(pmsm_t* pm)
 
     pid_clear(&pm->id_pi);
     pid_clear(&pm->iq_pi);
+    pid_clear(&pm->spd_pi);
+    pid_clear(&pm->pos_pi);
     pid_clear(&pm->vq_pi);
 
     /* 3. 状态推到 reset, 让状态机保持停机 */
@@ -412,6 +414,8 @@ void pmsm_reset(pmsm_t* pm)
     /* 控制器状态清零 */
     pid_clear(&pm->id_pi);
     pid_clear(&pm->iq_pi);
+    pid_clear(&pm->spd_pi);
+    pid_clear(&pm->pos_pi);
     pid_clear(&pm->vq_pi);
 
     pm->ctrl_bit = start;

@@ -195,18 +195,29 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  uint32_t slow_ms = HAL_GetTick();
+
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* ===== 调试输出 (100Hz), 用 VOFA+ (数据引擎选 JustFloat) 看波形 =====
-     * 通道: 0=机械角(0~360)   1=磁场状态 mg      2=CRC通过
-     *       3=SPI模式         4=相电流原始计数峰值   5=累计角度(带圈数)
-     *       6=MOS温度(℃)      7=q轴电压给定(V)  0 表示现在没在驱动
-     *       8=故障位掩码      9=母线电压(V)     10=A相原始计数  11=C相原始计数
-     */
+    /* 编码器连续读, 不再跟 10ms 发送周期绑在一起。
+     * SPI 一帧大约几十微秒, 主循环能到 1kHz 以上。 */
     mt6701_read(&mt6701);
+    spd_measure_update();
+
+#if HOST_MODE
+    host_cmd_poll();
+    host_cmd_tx_task();
+#endif
+
+    if ((uint32_t)(HAL_GetTick() - slow_ms) < 10u)
+    {
+      continue;
+    }
+    slow_ms += 10u;
+
     temp_calc();
 
 #if HWTEST_MODE
@@ -235,12 +246,6 @@ int main(void)
      *   3. START 之后把 ctrl_bit 保持在 opera, 让中断去跑控制
      *
      * 这样上位机改一个 mode 或 spd, 下一个 50us 中断就生效, 没有额外延迟。 */
-    host_cmd_poll();
-
-    /* 转速测量必须在主循环做: 编码器是这里读的, 在 20kHz 中断里微分
-     * 同一个角度值只会得到尖峰噪声。详见 spd_measure_update() 的说明 */
-    spd_measure_update();
-
     if (host_cal_request != 0u)
     {
         /* 标定期间由 calib_run 自己管 ctrl_bit, 结束后清标志 */
@@ -268,8 +273,6 @@ int main(void)
             pm.ctrl_bit = opera;
         }
     }
-
-    host_cmd_tx_task();
 
 #elif CURR_ENC_TEST
     /* ===== 真 FOC: 编码器电角度 + 电流环 =====
@@ -369,10 +372,12 @@ int main(void)
      * U14 (TLV9001) 焊上之后电流采样已经有效, 所以这里直接发换算后的安培值。
      * 之前发的是原始 ADC 计数, 那是 U14 没焊时的临时方案, 上位机看不出来是多少 A。
      *
-     *   0  机械角(°)      1  累计角(rad)    2  母线(V)      3  vq给定(V)
-     *   4  故障掩码       5  ia(A)         6  ib(A)        7  ic(A)
-     *   8  id实测(A)      9  iq实测(A)    10  iq给定(A)   11  id给定(A)
-     *  12  实测转速(rad/s) 13 MOS温度(°C)  14 电流峰值(A)  15 编码器CRC
+     *   0  机械角(°)       1  实际位置(rad)  2  母线(V)       3  vq给定(V)
+     *   4  故障            5  ia(A)          6  ib(A)         7  ic(A)
+     *   8  id实测(A)       9  iq实测(A)     10  iq给定(A)    11  id给定(A)
+     *  12  实际转速(rad/s) 13  MOS温度(°C)  14  电流峰值(A)  15  编码器CRC
+     *  16  目标转速(rad/s)  和通道 12 同一单位
+     *  17  目标位置(rad)    和通道 1 的实际位置同一单位
      */
     vofa_send_data(0,  mt6701.angle);
     vofa_send_data(1,  mt6701.total_rad);
@@ -405,9 +410,9 @@ int main(void)
         vofa_send_data(14, i_amp_peak);
     }
     vofa_send_data(15, (float)mt6701.crc_ok);
+    vofa_send_data(16, pm.ctrl.wr_set);
+    vofa_send_data(17, pm.ctrl.posm_set);
     vofa_sendframetail();
-
-    HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }

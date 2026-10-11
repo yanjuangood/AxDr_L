@@ -218,6 +218,7 @@ __ALIGN_BEGIN uint8_t USBD_StringSerial[USB_SIZ_STRING_SERIAL] __ALIGN_END = {
   * @param  speed : Current device speed
   * @param  length : Pointer to data length variable
   * @retval Pointer to descriptor buffer
+  * 返回设备描述符。
   */
 uint8_t * USBD_CDC_DeviceDescriptor(USBD_SpeedTypeDef speed, uint16_t *length)
 {
@@ -231,6 +232,7 @@ uint8_t * USBD_CDC_DeviceDescriptor(USBD_SpeedTypeDef speed, uint16_t *length)
   * @param  speed : Current device speed
   * @param  length : Pointer to data length variable
   * @retval Pointer to descriptor buffer
+  * 返回语言 ID 字符串。
   */
 uint8_t * USBD_CDC_LangIDStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length)
 {
@@ -244,6 +246,7 @@ uint8_t * USBD_CDC_LangIDStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length
   * @param  speed : Current device speed
   * @param  length : Pointer to data length variable
   * @retval Pointer to descriptor buffer
+  * 返回产品名称字符串。
   */
 uint8_t * USBD_CDC_ProductStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length)
 {
@@ -263,6 +266,7 @@ uint8_t * USBD_CDC_ProductStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *lengt
   * @param  speed : Current device speed
   * @param  length : Pointer to data length variable
   * @retval Pointer to descriptor buffer
+  * 返回厂商字符串。
   */
 uint8_t * USBD_CDC_ManufacturerStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length)
 {
@@ -276,6 +280,7 @@ uint8_t * USBD_CDC_ManufacturerStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *
   * @param  speed : Current device speed
   * @param  length : Pointer to data length variable
   * @retval Pointer to descriptor buffer
+  * 返回由芯片唯一 ID 生成的序列号。
   */
 uint8_t * USBD_CDC_SerialStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length)
 {
@@ -283,6 +288,7 @@ uint8_t * USBD_CDC_SerialStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length
   *length = USB_SIZ_STRING_SERIAL;
 
   /* Update the serial number string descriptor with the data from the unique
+  * 用 MCU 唯一 ID 生成 USB 序列号。
    * ID */
   Get_SerialNum();
 
@@ -298,6 +304,7 @@ uint8_t * USBD_CDC_SerialStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length
   * @param  speed : Current device speed
   * @param  length : Pointer to data length variable
   * @retval Pointer to descriptor buffer
+  * 返回配置字符串。
   */
 uint8_t * USBD_CDC_ConfigStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length)
 {
@@ -317,6 +324,7 @@ uint8_t * USBD_CDC_ConfigStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length
   * @param  speed : Current device speed
   * @param  length : Pointer to data length variable
   * @retval Pointer to descriptor buffer
+  * 返回接口字符串。
   */
 uint8_t * USBD_CDC_InterfaceStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *length)
 {
@@ -335,6 +343,7 @@ uint8_t * USBD_CDC_InterfaceStrDescriptor(USBD_SpeedTypeDef speed, uint16_t *len
   * @brief  Create the serial number string descriptor
   * @param  None
   * @retval None
+  * 用 MCU 唯一 ID 生成 USB 序列号。
   */
 static void Get_SerialNum(void)
 {
@@ -361,6 +370,7 @@ static void Get_SerialNum(void)
   * @param  pbuf: pointer to the buffer
   * @param  len: buffer length
   * @retval None
+  * 把整数逐位写成 USB 字符串用的 Unicode。
   */
 static void IntToUnicode(uint32_t value, uint8_t * pbuf, uint8_t len)
 {

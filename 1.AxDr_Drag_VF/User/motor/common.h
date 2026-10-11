@@ -1537,7 +1537,7 @@ void foc_get_curr_off(void);
 float spd_measure_M(float pos, float fs);
 
 void foc_cur_pi_calc(pmsm_t* pm);
-void foc_spd_pi_calc(pmsm_t* pm);
+void foc_spd_pi_calc(pmsm_t* pm, float dt);
 
 void foc_volt(pmsm_t* pm, float vd_ref, float vq_ref, float pos);
 void foc_curr(pmsm_t* pm, float id_set, float iq_set, float pos);
@@ -1590,11 +1590,15 @@ extern float host_enc_dir;
  *   都是估的 (51g 云台电机, 没实测过惯量)。估错了要么太软跟不上,
  *   要么太硬振荡。做成可调就能一边看波形一边试, 不用反复编译烧录。
  *
- * host_spd_kp > 0 时直接用 host_spd_kp / host_spd_ki, 忽略模型整定。 */
-extern float host_spd_bw;       /* 速度环带宽 (Hz), 仅模型整定时用 */
-extern float host_spd_kp;       /* 手调 kp, >0 生效 */
-extern float host_spd_ki;       /* 手调 ki */
+ * 速度环用 serial_pid_ctrl, 增益跟着 ibw 和 para.delta。
+ * host_spd_kp > 0 时改用 host_spd_kp / host_spd_ki。 */
+extern float host_spd_bw;
+extern float host_spd_kp;       /* 手调 kp, >0 生效, 单位 A/(rad/s) */
+extern float host_spd_ki;       /* 手调 ki, serial_pid 的 ki */
 extern float host_spd_sign;     /* 速度环输出极性, 默认 -1, 见下 */
+extern float host_pos_kp;       /* 位置环比例, 单位 (rad/s)/rad */
+extern float host_pos_kd;
+extern float host_pos_vmax;     /* 位置环速度限幅 (rad/s) */
 
 /* 实测机械角速度, 主循环 100Hz 调用。
  * 必须用这个, 不能用中断里的 foc_spd_measure_M() —— 编码器是主循环读的,

@@ -62,6 +62,7 @@ extern USBD_DescriptorsTypeDef CDC_Desc;
 /**
   * Init USB device Library, add supported class and start the library
   * @retval None
+  * 初始化 USB 设备库，注册 CDC 并开始枚举。
   */
 void MX_USB_Device_Init(void)
 {

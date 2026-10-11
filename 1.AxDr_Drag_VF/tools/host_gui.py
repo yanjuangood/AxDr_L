@@ -29,20 +29,23 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 # ======================= 协议常量 =======================
-NCH = 16
+NCH = 18
 TAIL = b'\x00\x00\x80\x7f'
 FRAME = NCH * 4 + 4
 BAUD = 115200          # USB CDC 用不到, 但留着以防有人接 USART
 
 # 和 main.c 的 vofa_send_data() 顺序严格对应
 CH_NAMES = [
-    '机械角(°)', '累计角(rad)', '母线(V)', 'vq给定(V)',
-    '故障掩码', 'ia(A)', 'ib(A)', 'ic(A)',
+    '机械角(°)', '实际位置(rad)', '母线电压(V)', 'vq给定(V)',
+    '故障', 'ia(A)', 'ib(A)', 'ic(A)',
     'id实测(A)', 'iq实测(A)', 'iq给定(A)', 'id给定(A)',
-    '转速(rad/s)', 'MOS温度(°C)', '电流峰值(A)', '编码器CRC',
+    '实际转速(rad/s)', 'MOS温度(°C)', '电流峰值(A)', '编码器CRC',
+    '目标转速(rad/s)', '目标位置(rad)',
 ]
-# 默认画这几条
-CH_DEFAULT = [5, 6, 7, 9, 12]
+# 波形上只留闭环要看的。帧里仍是 18 个数, 这里只是不把其余通道摆出来。
+# 顺序: 转速一对、电流一对、位置一对
+CH_SHOW = [12, 16, 9, 10, 1, 17]
+CH_DEFAULT = list(CH_SHOW)
 
 PLOT_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4',
                '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080',
@@ -329,8 +332,21 @@ class App:
         self._slide_last = 0.0
         self._slide_t = 0.0
 
-        ttk.Label(bar, text='提示: 先选「速度」模式并「运行」, 再拖速度条。'
-                            '转速单位 rad/s, 10 rad/s ≈ 95 rpm',
+        # ---- 第三行: 位置给定 ----
+        line3 = ttk.Frame(bar)
+        line3.pack(fill='x', padx=6, pady=(0, 6))
+        ttk.Label(line3, text='位置给定:').pack(side='left')
+        self.pos_var = tk.DoubleVar(value=0.0)
+        self.pos_entry = ttk.Entry(line3, textvariable=self.pos_var, width=10)
+        self.pos_entry.pack(side='left', padx=6)
+        self.pos_entry.bind('<Return>', lambda _e: self._apply_pos())
+        ttk.Label(line3, text='rad').pack(side='left')
+        ttk.Button(line3, text='应用', command=self._apply_pos).pack(side='left', padx=6)
+        ttk.Label(line3, text='先选「位置」再运行, 电机会停在当前角度, 再填目标',
+                  foreground='#888').pack(side='left', padx=8)
+
+        ttk.Label(bar, text='提示: 速度模式拖速度条。位置模式填目标角度后点应用。'
+                            '10 rad/s ≈ 95 rpm',
                   foreground='#888').pack(anchor='w', padx=8, pady=(0, 4))
 
     def _on_mode(self):
@@ -347,7 +363,10 @@ class App:
         故障是闭锁的, 这时发什么命令都不会动 —— 用户只会觉得"命令没用"。"""
         self.send('RST')
         self.root.after(80, lambda: self.send('mode %d' % self.mode_var.get()))
-        self.root.after(160, lambda: self.send('spd %.3f' % self.spd_var.get()))
+        if self.mode_var.get() == 3:
+            pass
+        else:
+            self.root.after(160, lambda: self.send('spd %.3f' % self.spd_var.get()))
         self.root.after(240, lambda: self.send('START'))
 
     def _on_stop(self):
@@ -364,6 +383,15 @@ class App:
         self._slide_t = now
         self.lbl_spd.config(text='%.1f rad/s (%.0f rpm)' % (v, v * 60.0 / (2 * 3.141592653589793)))
         self.send('spd %.3f' % v)
+
+    def _apply_pos(self):
+        """下发位置给定。模式不是位置时先切过去"""
+        if self.mode_var.get() != 3:
+            self.mode_var.set(3)
+            self.send('mode 3')
+            self.root.after(120, lambda: self.send('pos %.4f' % self.pos_var.get()))
+            return
+        self.send('pos %.4f' % self.pos_var.get())
 
     def _apply_speed(self):
         v = self.spd_var.get()
@@ -417,23 +445,26 @@ class App:
 
         chbar = ttk.Frame(right)
         chbar.pack(fill='x', padx=4, pady=3)
-        ttk.Label(chbar, text='显示通道:').pack(side='left')
-        for i, nm in enumerate(CH_NAMES):
-            v = tk.BooleanVar(value=(i in CH_DEFAULT))
+        grid = ttk.Frame(chbar)
+        grid.pack(fill='x')
+        for col, i in enumerate(CH_SHOW):
+            v = tk.BooleanVar(value=True)
             self.ch_vars[i] = v
-            ttk.Checkbutton(chbar, text=str(i), variable=v,
-                            command=self._ch_changed).pack(side='left')
+            ttk.Checkbutton(grid, text=CH_NAMES[i], variable=v,
+                            command=self._ch_changed).grid(
+                                row=0, column=col, sticky='w', padx=3, pady=1)
 
-        # 时间窗选择。固定窗口才能保证线密度不变
-        ttk.Label(chbar, text='  时间窗:').pack(side='left')
+        winbar = ttk.Frame(chbar)
+        winbar.pack(fill='x', pady=(4, 0))
+        ttk.Label(winbar, text='时间窗:').pack(side='left')
         self.win_var = tk.StringVar(value='5s')
-        cb = ttk.Combobox(chbar, textvariable=self.win_var, width=5,
+        cb = ttk.Combobox(winbar, textvariable=self.win_var, width=5,
                           state='readonly',
                           values=['0.5s', '1s', '2s', '5s', '10s', '20s'])
         cb.pack(side='left', padx=2)
         cb.bind('<<ComboboxSelected>>', self._win_changed)
         self.pause_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(chbar, text='暂停', variable=self.pause_var).pack(side='left', padx=6)
+        ttk.Checkbutton(winbar, text='暂停', variable=self.pause_var).pack(side='left', padx=6)
 
         self.plot = tk.Canvas(right, bg='white', height=380,
                               highlightthickness=1, highlightbackground='#ccc')
@@ -696,8 +727,7 @@ class App:
             if len(pts) >= 4:
                 c.create_line(*pts, fill=col, width=1.4)
 
-        self.legend.config(text='  '.join(
-            '%d:%s' % (i, CH_NAMES[i]) for i in self.plot_ch))
+        self.legend.config(text='  '.join(CH_NAMES[i] for i in self.plot_ch))
 
 
 def main():
